@@ -1,31 +1,6 @@
-..  BSD LICENSE
-    Copyright 2016 NXP.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2016 NXP
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of NXP nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 DPAA2 Poll Mode Driver
 ======================
@@ -519,27 +494,11 @@ Please note that enabling debugging options may affect system performance.
 
 - ``CONFIG_RTE_LIBRTE_DPAA2_DEBUG_DRIVER`` (default ``n``)
 
-  Toggle display of generic debugging messages
+  Toggle display of debugging messages/logic
 
 - ``CONFIG_RTE_LIBRTE_DPAA2_USE_PHYS_IOVA`` (default ``y``)
 
   Toggle to use physical address vs virtual address for hardware accelerators.
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_DEBUG_INIT`` (default ``n``)
-
-  Toggle display of initialization related messages.
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_DEBUG_RX`` (default ``n``)
-
-  Toggle display of receive fast path run-time message
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_DEBUG_TX`` (default ``n``)
-
-  Toggle display of transmit fast path run-time message
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_DEBUG_TX_FREE`` (default ``n``)
-
-  Toggle display of transmit fast path buffer free run-time message
 
 Driver compilation and testing
 ------------------------------
@@ -557,8 +516,7 @@ for details.
 
    .. code-block:: console
 
-      ./arm64-dpaa2-linuxapp-gcc/testpmd -c 0xff -n 1 \
-        -- -i --portmask=0x3 --nb-cores=1 --no-flush-rx
+      ./testpmd -c 0xff -n 1 -- -i --portmask=0x3 --nb-cores=1 --no-flush-rx
 
       .....
       EAL: Registered [pci] bus.
@@ -581,6 +539,38 @@ for details.
       Port 1 Link Up - speed 10000 Mbps - full-duplex
       Done
       testpmd>
+
+Enabling logs
+-------------
+
+For enabling logging for DPAA2 PMD, following log-level prefix can be used:
+
+ .. code-block:: console
+
+    <dpdk app> <EAL args> --log-level=bus.fslmc:<level> -- ...
+
+Using ``bus.fslmc`` as log matching criteria, all FSLMC bus logs can be enabled
+which are lower than logging ``level``.
+
+ Or
+
+ .. code-block:: console
+
+    <dpdk app> <EAL args> --log-level=pmd.net.dpaa2:<level> -- ...
+
+Using ``pmd.dpaa2`` as log matching criteria, all PMD logs can be enabled
+which are lower than logging ``level``.
+
+Whitelisting & Blacklisting
+---------------------------
+
+For blacklisting a DPAA2 device, following commands can be used.
+
+ .. code-block:: console
+
+    <dpdk app> <EAL args> -b "fslmc:dpni.x" -- ...
+
+Where x is the device object id as configured in resource container.
 
 Limitations
 -----------

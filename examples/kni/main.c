@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -53,7 +24,6 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_launch.h>
@@ -61,7 +31,6 @@
 #include <rte_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -92,10 +61,10 @@
 #define MEMPOOL_CACHE_SZ        PKT_BURST_SZ
 
 /* Number of RX ring descriptors */
-#define NB_RXD                  128
+#define NB_RXD                  1024
 
 /* Number of TX ring descriptors */
-#define NB_TXD                  512
+#define NB_TXD                  1024
 
 /* Total octets in ethernet header */
 #define KNI_ENET_HEADER_SIZE    14
@@ -125,13 +94,6 @@ static struct kni_port_params *kni_port_params_array[RTE_MAX_ETHPORTS];
 
 /* Options for configuring ethernet port */
 static struct rte_eth_conf port_conf = {
-	.rxmode = {
-		.header_split = 0,      /* Header Split disabled */
-		.hw_ip_checksum = 0,    /* IP checksum offload disabled */
-		.hw_vlan_filter = 0,    /* VLAN filtering disabled */
-		.jumbo_frame = 0,       /* Jumbo Frame Support disabled */
-		.hw_strip_crc = 1,      /* CRC stripped by hardware */
-	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
 	},
@@ -165,6 +127,7 @@ static struct kni_interface_stats kni_stats[RTE_MAX_ETHPORTS];
 
 static int kni_change_mtu(uint16_t port_id, unsigned int new_mtu);
 static int kni_config_network_interface(uint16_t port_id, uint8_t if_up);
+static int kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[]);
 
 static rte_atomic32_t kni_stop = RTE_ATOMIC32_INIT(0);
 
@@ -308,7 +271,7 @@ kni_egress(struct kni_port_params *p)
 static int
 main_loop(__rte_unused void *arg)
 {
-	uint8_t i, nb_ports = rte_eth_dev_count();
+	uint16_t i;
 	int32_t f_stop;
 	const unsigned lcore_id = rte_lcore_id();
 	enum lcore_rxtx {
@@ -319,7 +282,7 @@ main_loop(__rte_unused void *arg)
 	};
 	enum lcore_rxtx flag = LCORE_NONE;
 
-	for (i = 0; i < nb_ports; i++) {
+	RTE_ETH_FOREACH_DEV(i) {
 		if (!kni_port_params_array[i])
 			continue;
 		if (kni_port_params_array[i]->lcore_rx == (uint8_t)lcore_id) {
@@ -609,11 +572,19 @@ init_port(uint16_t port)
 	int ret;
 	uint16_t nb_rxd = NB_RXD;
 	uint16_t nb_txd = NB_TXD;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_rxconf rxq_conf;
+	struct rte_eth_txconf txq_conf;
+	struct rte_eth_conf local_port_conf = port_conf;
 
 	/* Initialise device and RX/TX queues */
 	RTE_LOG(INFO, APP, "Initialising port %u ...\n", (unsigned)port);
 	fflush(stdout);
-	ret = rte_eth_dev_configure(port, 1, 1, &port_conf);
+	rte_eth_dev_info_get(port, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		local_port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+	ret = rte_eth_dev_configure(port, 1, 1, &local_port_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Could not configure port%u (%d)\n",
 		            (unsigned)port, ret);
@@ -623,14 +594,18 @@ init_port(uint16_t port)
 		rte_exit(EXIT_FAILURE, "Could not adjust number of descriptors "
 				"for port%u (%d)\n", (unsigned)port, ret);
 
+	rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = local_port_conf.rxmode.offloads;
 	ret = rte_eth_rx_queue_setup(port, 0, nb_rxd,
-		rte_eth_dev_socket_id(port), NULL, pktmbuf_pool);
+		rte_eth_dev_socket_id(port), &rxq_conf, pktmbuf_pool);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Could not setup up RX queue for "
 				"port%u (%d)\n", (unsigned)port, ret);
 
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = local_port_conf.txmode.offloads;
 	ret = rte_eth_tx_queue_setup(port, 0, nb_txd,
-		rte_eth_dev_socket_id(port), NULL);
+		rte_eth_dev_socket_id(port), &txq_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Could not setup up TX queue for "
 				"port%u (%d)\n", (unsigned)port, ret);
@@ -646,7 +621,7 @@ init_port(uint16_t port)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
@@ -658,7 +633,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 	fflush(stdout);
 	for (count = 0; count <= MAX_CHECK_TIME; count++) {
 		all_ports_up = 1;
-		for (portid = 0; portid < port_num; portid++) {
+		RTE_ETH_FOREACH_DEV(portid) {
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
@@ -704,9 +679,12 @@ static int
 kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 {
 	int ret;
+	uint16_t nb_rxd = NB_RXD;
 	struct rte_eth_conf conf;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_rxconf rxq_conf;
 
-	if (port_id >= rte_eth_dev_count()) {
+	if (!rte_eth_dev_is_valid_port(port_id)) {
 		RTE_LOG(ERR, APP, "Invalid port id %d\n", port_id);
 		return -EINVAL;
 	}
@@ -719,9 +697,9 @@ kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 	memcpy(&conf, &port_conf, sizeof(conf));
 	/* Set new MTU */
 	if (new_mtu > ETHER_MAX_LEN)
-		conf.rxmode.jumbo_frame = 1;
+		conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
-		conf.rxmode.jumbo_frame = 0;
+		conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
 
 	/* mtu + length of header + length of FCS = max pkt length */
 	conf.rxmode.max_rx_pkt_len = new_mtu + KNI_ENET_HEADER_SIZE +
@@ -729,6 +707,23 @@ kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 	ret = rte_eth_dev_configure(port_id, 1, 1, &conf);
 	if (ret < 0) {
 		RTE_LOG(ERR, APP, "Fail to reconfigure port %d\n", port_id);
+		return ret;
+	}
+
+	ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, NULL);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "Could not adjust number of descriptors "
+				"for port%u (%d)\n", (unsigned int)port_id,
+				ret);
+
+	rte_eth_dev_info_get(port_id, &dev_info);
+	rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = conf.rxmode.offloads;
+	ret = rte_eth_rx_queue_setup(port_id, 0, nb_rxd,
+		rte_eth_dev_socket_id(port_id), &rxq_conf, pktmbuf_pool);
+	if (ret < 0) {
+		RTE_LOG(ERR, APP, "Fail to setup Rx queue of port %d\n",
+				port_id);
 		return ret;
 	}
 
@@ -748,7 +743,7 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 {
 	int ret = 0;
 
-	if (port_id >= rte_eth_dev_count() || port_id >= RTE_MAX_ETHPORTS) {
+	if (!rte_eth_dev_is_valid_port(port_id)) {
 		RTE_LOG(ERR, APP, "Invalid port id %d\n", port_id);
 		return -EINVAL;
 	}
@@ -764,6 +759,37 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 
 	if (ret < 0)
 		RTE_LOG(ERR, APP, "Failed to start port %d\n", port_id);
+
+	return ret;
+}
+
+static void
+print_ethaddr(const char *name, struct ether_addr *mac_addr)
+{
+	char buf[ETHER_ADDR_FMT_SIZE];
+	ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, mac_addr);
+	RTE_LOG(INFO, APP, "\t%s%s\n", name, buf);
+}
+
+/* Callback for request of configuring mac address */
+static int
+kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
+{
+	int ret = 0;
+
+	if (!rte_eth_dev_is_valid_port(port_id)) {
+		RTE_LOG(ERR, APP, "Invalid port id %d\n", port_id);
+		return -EINVAL;
+	}
+
+	RTE_LOG(INFO, APP, "Configure mac address of %d\n", port_id);
+	print_ethaddr("Address:", (struct ether_addr *)mac_addr);
+
+	ret = rte_eth_dev_default_mac_addr_set(port_id,
+					       (struct ether_addr *)mac_addr);
+	if (ret < 0)
+		RTE_LOG(ERR, APP, "Failed to config mac_addr for port %d\n",
+			port_id);
 
 	return ret;
 }
@@ -803,19 +829,30 @@ kni_alloc(uint16_t port_id)
 		if (i == 0) {
 			struct rte_kni_ops ops;
 			struct rte_eth_dev_info dev_info;
+			const struct rte_pci_device *pci_dev;
+			const struct rte_bus *bus = NULL;
 
 			memset(&dev_info, 0, sizeof(dev_info));
 			rte_eth_dev_info_get(port_id, &dev_info);
 
-			if (dev_info.pci_dev) {
-				conf.addr = dev_info.pci_dev->addr;
-				conf.id = dev_info.pci_dev->id;
+			if (dev_info.device)
+				bus = rte_bus_find_by_device(dev_info.device);
+			if (bus && !strcmp(bus->name, "pci")) {
+				pci_dev = RTE_DEV_TO_PCI(dev_info.device);
+				conf.addr = pci_dev->addr;
+				conf.id = pci_dev->id;
 			}
+			/* Get the interface default mac address */
+			rte_eth_macaddr_get(port_id,
+					(struct ether_addr *)&conf.mac_addr);
+
+			rte_eth_dev_get_mtu(port_id, &conf.mtu);
 
 			memset(&ops, 0, sizeof(ops));
 			ops.port_id = port_id;
 			ops.change_mtu = kni_change_mtu;
 			ops.config_network_if = kni_config_network_interface;
+			ops.config_mac_address = kni_config_mac_address;
 
 			kni = rte_kni_alloc(pktmbuf_pool, &conf, &ops);
 		} else
@@ -884,13 +921,13 @@ main(int argc, char** argv)
 	}
 
 	/* Get number of ports found in scan */
-	nb_sys_ports = rte_eth_dev_count();
+	nb_sys_ports = rte_eth_dev_count_avail();
 	if (nb_sys_ports == 0)
 		rte_exit(EXIT_FAILURE, "No supported Ethernet device found\n");
 
 	/* Check if the configured port ID is valid */
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++)
-		if (kni_port_params_array[i] && i >= nb_sys_ports)
+		if (kni_port_params_array[i] && !rte_eth_dev_is_valid_port(i))
 			rte_exit(EXIT_FAILURE, "Configured invalid "
 						"port ID %u\n", i);
 
@@ -898,7 +935,7 @@ main(int argc, char** argv)
 	init_kni();
 
 	/* Initialise each port */
-	for (port = 0; port < nb_sys_ports; port++) {
+	RTE_ETH_FOREACH_DEV(port) {
 		/* Skip ports that are not enabled */
 		if (!(ports_mask & (1 << port)))
 			continue;
@@ -910,7 +947,7 @@ main(int argc, char** argv)
 
 		kni_alloc(port);
 	}
-	check_all_ports_link_status(nb_sys_ports, ports_mask);
+	check_all_ports_link_status(ports_mask);
 
 	/* Launch per-lcore function on every lcore */
 	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);
@@ -920,7 +957,7 @@ main(int argc, char** argv)
 	}
 
 	/* Release resources */
-	for (port = 0; port < nb_sys_ports; port++) {
+	RTE_ETH_FOREACH_DEV(port) {
 		if (!(ports_mask & (1 << port)))
 			continue;
 		kni_free_kni(port);

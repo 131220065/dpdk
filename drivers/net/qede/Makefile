@@ -1,8 +1,7 @@
-#    Copyright (c) 2016 QLogic Corporation.
+#    SPDX-License-Identifier: BSD-3-Clause
+#    Copyright (c) 2016 - 2018 Cavium Inc.
 #    All rights reserved.
-#    www.qlogic.com
-#
-#    See LICENSE.qede_pmd for copyright and licensing details.
+#    www.cavium.com
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
@@ -72,8 +71,8 @@ CFLAGS_BASE_DRIVER += -Wno-sometimes-uninitialized
 ifeq ($(shell clang -Wno-pointer-bool-conversion -Werror -E - < /dev/null > /dev/null 2>&1; echo $$?),0)
 CFLAGS_BASE_DRIVER += -Wno-pointer-bool-conversion
 endif
-else
-CFLAGS_BASE_DRIVER += -wd188 #188: enumerated type mixed with another type
+else #ICC
+CFLAGS_qede_ethdev.o += -diag-disable 279 #279: controlling expression is constant
 endif
 
 #

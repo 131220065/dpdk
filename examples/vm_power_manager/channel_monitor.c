@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <unistd.h>
@@ -56,6 +27,7 @@
 #include "channel_commands.h"
 #include "channel_manager.h"
 #include "power_manager.h"
+#include "oob_monitor.h"
 
 #define RTE_LOGTYPE_CHANNEL_MONITOR RTE_LOGTYPE_USER1
 
@@ -121,6 +93,10 @@ get_pcpu_to_control(struct policy *pol)
 	struct vm_info info;
 	int pcpu, count;
 	uint64_t mask_u64b;
+	struct core_info *ci;
+	int ret;
+
+	ci = get_core_info();
 
 	RTE_LOG(INFO, CHANNEL_MONITOR, "Looking for pcpu for %s\n",
 			pol->pkt.vm_name);
@@ -129,8 +105,22 @@ get_pcpu_to_control(struct policy *pol)
 	for (count = 0; count < pol->pkt.num_vcpu; count++) {
 		mask_u64b = info.pcpu_mask[pol->pkt.vcpu_to_control[count]];
 		for (pcpu = 0; mask_u64b; mask_u64b &= ~(1ULL << pcpu++)) {
-			if ((mask_u64b >> pcpu) & 1)
-				pol->core_share[count].pcpu = pcpu;
+			if ((mask_u64b >> pcpu) & 1) {
+				if (pol->pkt.policy_to_use == BRANCH_RATIO) {
+					ci->cd[pcpu].oob_enabled = 1;
+					ret = add_core_to_monitor(pcpu);
+					if (ret == 0)
+						printf("Monitoring pcpu %d via Branch Ratio\n",
+								pcpu);
+					else
+						printf("Failed to start OOB Monitoring pcpu %d\n",
+								pcpu);
+
+				} else {
+					pol->core_share[count].pcpu = pcpu;
+					printf("Monitoring pcpu %d\n", pcpu);
+				}
+			}
 		}
 	}
 }
@@ -139,12 +129,11 @@ static int
 get_pfid(struct policy *pol)
 {
 
-	int i, x, ret = 0, nb_ports;
+	int i, x, ret = 0;
 
-	nb_ports = rte_eth_dev_count();
 	for (i = 0; i < pol->pkt.nb_mac_to_monitor; i++) {
 
-		for (x = 0; x < nb_ports; x++) {
+		RTE_ETH_FOREACH_DEV(x) {
 			ret = rte_pmd_i40e_query_vfid_by_mac(x,
 				(struct ether_addr *)&(pol->pkt.vfid[i]));
 			if (ret != -EINVAL) {

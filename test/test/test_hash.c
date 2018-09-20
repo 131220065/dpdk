@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include <stdio.h>
@@ -44,7 +15,6 @@
 #include <rte_cycles.h>
 #include <rte_random.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_ip.h>
 #include <rte_string_fns.h>
@@ -1133,6 +1103,7 @@ static int test_average_table_utilization(void)
 	unsigned i, j;
 	unsigned added_keys, average_keys_added = 0;
 	int ret;
+	unsigned int cnt;
 
 	printf("\n# Running test to determine average utilization"
 	       "\n  before adding elements begins to fail\n");
@@ -1151,9 +1122,20 @@ static int test_average_table_utilization(void)
 			for (i = 0; i < ut_params.key_len; i++)
 				simple_key[i] = rte_rand() % 255;
 			ret = rte_hash_add_key(handle, simple_key);
+			if (ret < 0)
+				break;
 		}
+
 		if (ret != -ENOSPC) {
 			printf("Unexpected error when adding keys\n");
+			rte_hash_free(handle);
+			return -1;
+		}
+
+		cnt = rte_hash_count(handle);
+		if (cnt != added_keys) {
+			printf("rte_hash_count returned wrong value %u, %u,"
+					"%u\n", j, added_keys, cnt);
 			rte_hash_free(handle);
 			return -1;
 		}

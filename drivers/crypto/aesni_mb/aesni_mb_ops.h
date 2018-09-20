@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2015 Intel Corporation
  */
 
 #ifndef _AESNI_MB_OPS_H_
@@ -37,8 +9,7 @@
 #define LINUX
 #endif
 
-#include <mb_mgr.h>
-#include <aux_funcs.h>
+#include <intel-ipsec-mb.h>
 
 enum aesni_mb_vector_mode {
 	RTE_AESNI_MB_NOT_SUPPORTED = 0,
@@ -62,9 +33,12 @@ typedef void (*aes_keyexp_192_t)
 		(const void *key, void *enc_exp_keys, void *dec_exp_keys);
 typedef void (*aes_keyexp_256_t)
 		(const void *key, void *enc_exp_keys, void *dec_exp_keys);
-
 typedef void (*aes_xcbc_expand_key_t)
 		(const void *key, void *exp_k1, void *k2, void *k3);
+typedef void (*aes_cmac_sub_key_gen_t)
+		(const void *exp_key, void *k2, void *k3);
+typedef void (*aes_cmac_keyexp_t)
+		(const void *key, void *keyexp);
 
 /** Multi-buffer library function pointer table */
 struct aesni_mb_op_fns {
@@ -106,9 +80,12 @@ struct aesni_mb_op_fns {
 			/**< AES192 key expansions */
 			aes_keyexp_256_t aes256;
 			/**< AES256 key expansions */
-
 			aes_xcbc_expand_key_t aes_xcbc;
-			/**< AES XCBC key expansions */
+			/**< AES XCBC key epansions */
+			aes_cmac_sub_key_gen_t aes_cmac_subkey;
+			/**< AES CMAC subkey expansions */
+			aes_cmac_keyexp_t aes_cmac_expkey;
+			/**< AES CMAC key expansions */
 		} keyexp;
 		/**< Key expansion functions */
 	} aux;
@@ -151,7 +128,9 @@ static const struct aesni_mb_op_fns job_ops[] = {
 					aes_keyexp_128_sse,
 					aes_keyexp_192_sse,
 					aes_keyexp_256_sse,
-					aes_xcbc_expand_key_sse
+					aes_xcbc_expand_key_sse,
+					aes_cmac_subkey_gen_sse,
+					aes_keyexp_128_enc_sse
 				}
 			}
 		},
@@ -176,7 +155,9 @@ static const struct aesni_mb_op_fns job_ops[] = {
 					aes_keyexp_128_avx,
 					aes_keyexp_192_avx,
 					aes_keyexp_256_avx,
-					aes_xcbc_expand_key_avx
+					aes_xcbc_expand_key_avx,
+					aes_cmac_subkey_gen_avx,
+					aes_keyexp_128_enc_avx
 				}
 			}
 		},
@@ -201,7 +182,9 @@ static const struct aesni_mb_op_fns job_ops[] = {
 					aes_keyexp_128_avx2,
 					aes_keyexp_192_avx2,
 					aes_keyexp_256_avx2,
-					aes_xcbc_expand_key_avx2
+					aes_xcbc_expand_key_avx2,
+					aes_cmac_subkey_gen_avx2,
+					aes_keyexp_128_enc_avx2
 				}
 			}
 		},
@@ -226,7 +209,9 @@ static const struct aesni_mb_op_fns job_ops[] = {
 					aes_keyexp_128_avx512,
 					aes_keyexp_192_avx512,
 					aes_keyexp_256_avx512,
-					aes_xcbc_expand_key_avx512
+					aes_xcbc_expand_key_avx512,
+					aes_cmac_subkey_gen_avx512,
+					aes_keyexp_128_enc_avx512
 				}
 			}
 		}

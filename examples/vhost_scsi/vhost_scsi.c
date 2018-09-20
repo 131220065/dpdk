@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <stdint.h>
@@ -50,7 +21,6 @@
 #include "scsi_spec.h"
 
 #define VIRTIO_SCSI_FEATURES ((1 << VIRTIO_F_NOTIFY_ON_EMPTY) |\
-			      (1 << VIRTIO_RING_F_EVENT_IDX) |\
 			      (1 << VIRTIO_SCSI_F_INOUT) |\
 			      (1 << VIRTIO_SCSI_F_CHANGE))
 
@@ -68,7 +38,7 @@ vhost_scsi_ctrlr_find(__rte_unused const char *ctrlr_name)
 	return g_vhost_ctrlr;
 }
 
-static uint64_t gpa_to_vva(int vid, uint64_t gpa)
+static uint64_t gpa_to_vva(int vid, uint64_t gpa, uint64_t *len)
 {
 	char path[PATH_MAX];
 	struct vhost_scsi_ctrlr *ctrlr;
@@ -88,7 +58,7 @@ static uint64_t gpa_to_vva(int vid, uint64_t gpa)
 
 	assert(ctrlr->mem != NULL);
 
-	return rte_vhost_gpa_to_vva(ctrlr->mem, gpa);
+	return rte_vhost_va_from_guest_pa(ctrlr->mem, gpa, len);
 }
 
 static struct vring_desc *
@@ -110,7 +80,7 @@ descriptor_is_wr(struct vring_desc *cur_desc)
 }
 
 static void
-submit_completion(struct vhost_scsi_task *task)
+submit_completion(struct vhost_scsi_task *task, uint32_t q_idx)
 {
 	struct rte_vhost_vring *vq;
 	struct vring_used *used;
@@ -131,22 +101,36 @@ submit_completion(struct vhost_scsi_task *task)
 	/* Send an interrupt back to the guest VM so that it knows
 	 * a completion is ready to be processed.
 	 */
-	eventfd_write(vq->callfd, (eventfd_t)1);
+	rte_vhost_vring_call(task->bdev->vid, q_idx);
 }
 
 static void
 vhost_process_read_payload_chain(struct vhost_scsi_task *task)
 {
 	void *data;
+	uint64_t chunck_len;
 
 	task->iovs_cnt = 0;
+	chunck_len = task->desc->len;
 	task->resp = (void *)(uintptr_t)gpa_to_vva(task->bdev->vid,
-						   task->desc->addr);
+						   task->desc->addr,
+						   &chunck_len);
+	if (!task->resp || chunck_len != task->desc->len) {
+		fprintf(stderr, "failed to translate desc address.\n");
+		return;
+	}
 
 	while (descriptor_has_next(task->desc)) {
 		task->desc = descriptor_get_next(task->vq->desc, task->desc);
+		chunck_len = task->desc->len;
 		data = (void *)(uintptr_t)gpa_to_vva(task->bdev->vid,
-						     task->desc->addr);
+						     task->desc->addr,
+							 &chunck_len);
+		if (!data || chunck_len != task->desc->len) {
+			fprintf(stderr, "failed to translate desc address.\n");
+			return;
+		}
+
 		task->iovs[task->iovs_cnt].iov_base = data;
 		task->iovs[task->iovs_cnt].iov_len = task->desc->len;
 		task->data_len += task->desc->len;
@@ -158,12 +142,20 @@ static void
 vhost_process_write_payload_chain(struct vhost_scsi_task *task)
 {
 	void *data;
+	uint64_t chunck_len;
 
 	task->iovs_cnt = 0;
 
 	do {
+		chunck_len = task->desc->len;
 		data = (void *)(uintptr_t)gpa_to_vva(task->bdev->vid,
-						     task->desc->addr);
+						     task->desc->addr,
+							 &chunck_len);
+		if (!data || chunck_len != task->desc->len) {
+			fprintf(stderr, "failed to translate desc address.\n");
+			return;
+		}
+
 		task->iovs[task->iovs_cnt].iov_base = data;
 		task->iovs[task->iovs_cnt].iov_len = task->desc->len;
 		task->data_len += task->desc->len;
@@ -171,8 +163,12 @@ vhost_process_write_payload_chain(struct vhost_scsi_task *task)
 		task->desc = descriptor_get_next(task->vq->desc, task->desc);
 	} while (descriptor_has_next(task->desc));
 
+	chunck_len = task->desc->len;
 	task->resp = (void *)(uintptr_t)gpa_to_vva(task->bdev->vid,
-						   task->desc->addr);
+						   task->desc->addr,
+						   &chunck_len);
+	if (!task->resp || chunck_len != task->desc->len)
+		fprintf(stderr, "failed to translate desc address.\n");
 }
 
 static struct vhost_block_dev *
@@ -218,6 +214,7 @@ process_requestq(struct vhost_scsi_ctrlr *ctrlr, uint32_t q_idx)
 		int req_idx;
 		uint16_t last_idx;
 		struct vhost_scsi_task *task;
+		uint64_t chunck_len;
 
 		last_idx = scsi_vq->last_used_idx & (vq->size - 1);
 		req_idx = vq->avail->ring[last_idx];
@@ -235,16 +232,27 @@ process_requestq(struct vhost_scsi_ctrlr *ctrlr, uint32_t q_idx)
 		assert((task->desc->flags & VRING_DESC_F_INDIRECT) == 0);
 		scsi_vq->last_used_idx++;
 
+		chunck_len = task->desc->len;
 		task->req = (void *)(uintptr_t)gpa_to_vva(task->bdev->vid,
-							  task->desc->addr);
+							  task->desc->addr,
+							  &chunck_len);
+		if (!task->req || chunck_len != task->desc->len) {
+			fprintf(stderr, "failed to translate desc address.\n");
+			return;
+		}
 
 		task->desc = descriptor_get_next(task->vq->desc, task->desc);
 		if (!descriptor_has_next(task->desc)) {
 			task->dxfer_dir = SCSI_DIR_NONE;
+			chunck_len = task->desc->len;
 			task->resp = (void *)(uintptr_t)
 					      gpa_to_vva(task->bdev->vid,
-							 task->desc->addr);
-
+							 task->desc->addr,
+							 &chunck_len);
+			if (!task->resp || chunck_len != task->desc->len) {
+				fprintf(stderr, "failed to translate desc address.\n");
+				return;
+			}
 		} else if (!descriptor_is_wr(task->desc)) {
 			task->dxfer_dir = SCSI_DIR_TO_DEV;
 			vhost_process_write_payload_chain(task);
@@ -263,7 +271,7 @@ process_requestq(struct vhost_scsi_ctrlr *ctrlr, uint32_t q_idx)
 			task->resp->status = 0;
 			task->resp->resid = 0;
 		}
-		submit_completion(task);
+		submit_completion(task, q_idx);
 		rte_free(task);
 	}
 }

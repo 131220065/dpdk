@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -38,6 +9,17 @@
 #include <sys/wait.h>
 
 #include "test.h"
+
+#ifndef RTE_LIBRTE_KNI
+
+static int
+test_kni(void)
+{
+	printf("KNI not supported, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
 
 #include <rte_string_fns.h>
 #include <rte_mempool.h>
@@ -52,8 +34,8 @@
 #define PKT_BURST_SZ     32
 #define MEMPOOL_CACHE_SZ PKT_BURST_SZ
 #define SOCKET           0
-#define NB_RXD           128
-#define NB_TXD           512
+#define NB_RXD           1024
+#define NB_TXD           1024
 #define KNI_TIMEOUT_MS   5000 /* ms */
 
 #define IFCONFIG      "/sbin/ifconfig "
@@ -88,13 +70,6 @@ static const struct rte_eth_txconf tx_conf = {
 };
 
 static const struct rte_eth_conf port_conf = {
-	.rxmode = {
-		.header_split = 0,
-		.hw_ip_checksum = 0,
-		.hw_vlan_filter = 0,
-		.jumbo_frame = 0,
-		.hw_strip_crc = 1,
-	},
 	.txmode = {
 		.mq_mode = ETH_DCB_NONE,
 	},
@@ -103,6 +78,8 @@ static const struct rte_eth_conf port_conf = {
 static struct rte_kni_ops kni_ops = {
 	.change_mtu = NULL,
 	.config_network_if = NULL,
+	.config_mac_address = NULL,
+	.config_promiscusity = NULL,
 };
 
 static unsigned lcore_master, lcore_ingress, lcore_egress;
@@ -260,6 +237,8 @@ test_kni_register_handler_mp(void)
 		struct rte_kni_ops ops = {
 			.change_mtu = kni_change_mtu,
 			.config_network_if = NULL,
+			.config_mac_address = NULL,
+			.config_promiscusity = NULL,
 		};
 
 		if (!kni) {
@@ -371,6 +350,8 @@ test_kni_processing(uint16_t port_id, struct rte_mempool *mp)
 	struct rte_kni_conf conf;
 	struct rte_eth_dev_info info;
 	struct rte_kni_ops ops;
+	const struct rte_pci_device *pci_dev;
+	const struct rte_bus *bus = NULL;
 
 	if (!mp)
 		return -1;
@@ -380,8 +361,13 @@ test_kni_processing(uint16_t port_id, struct rte_mempool *mp)
 	memset(&ops, 0, sizeof(ops));
 
 	rte_eth_dev_info_get(port_id, &info);
-	conf.addr = info.pci_dev->addr;
-	conf.id = info.pci_dev->id;
+	if (info.device)
+		bus = rte_bus_find_by_device(info.device);
+	if (bus && !strcmp(bus->name, "pci")) {
+		pci_dev = RTE_DEV_TO_PCI(info.device);
+		conf.addr = pci_dev->addr;
+		conf.id = pci_dev->id;
+	}
 	snprintf(conf.name, sizeof(conf.name), TEST_KNI_PORT);
 
 	/* core id 1 configured for kernel thread */
@@ -479,6 +465,8 @@ test_kni(void)
 	struct rte_kni_conf conf;
 	struct rte_eth_dev_info info;
 	struct rte_kni_ops ops;
+	const struct rte_pci_device *pci_dev;
+	const struct rte_bus *bus;
 
 	/* Initialize KNI subsytem */
 	rte_kni_init(KNI_TEST_MAX_PORTS);
@@ -494,7 +482,7 @@ test_kni(void)
 		return -1;
 	}
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0) {
 		printf("no supported nic port found\n");
 		return -1;
@@ -537,8 +525,15 @@ test_kni(void)
 	memset(&conf, 0, sizeof(conf));
 	memset(&ops, 0, sizeof(ops));
 	rte_eth_dev_info_get(port_id, &info);
-	conf.addr = info.pci_dev->addr;
-	conf.id = info.pci_dev->id;
+	if (info.device)
+		bus = rte_bus_find_by_device(info.device);
+	else
+		bus = NULL;
+	if (bus && !strcmp(bus->name, "pci")) {
+		pci_dev = RTE_DEV_TO_PCI(info.device);
+		conf.addr = pci_dev->addr;
+		conf.id = pci_dev->id;
+	}
 	conf.group_id = port_id;
 	conf.mbuf_size = MAX_PACKET_SZ;
 
@@ -566,8 +561,15 @@ test_kni(void)
 	memset(&info, 0, sizeof(info));
 	memset(&ops, 0, sizeof(ops));
 	rte_eth_dev_info_get(port_id, &info);
-	conf.addr = info.pci_dev->addr;
-	conf.id = info.pci_dev->id;
+	if (info.device)
+		bus = rte_bus_find_by_device(info.device);
+	else
+		bus = NULL;
+	if (bus && !strcmp(bus->name, "pci")) {
+		pci_dev = RTE_DEV_TO_PCI(info.device);
+		conf.addr = pci_dev->addr;
+		conf.id = pci_dev->id;
+	}
 	conf.group_id = port_id;
 	conf.mbuf_size = MAX_PACKET_SZ;
 
@@ -633,5 +635,7 @@ fail:
 
 	return ret;
 }
+
+#endif
 
 REGISTER_TEST_COMMAND(kni_autotest, test_kni);

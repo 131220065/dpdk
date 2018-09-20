@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 #include "test.h"
 
@@ -247,6 +218,8 @@ test_pmd_ring_pair_create_attach(int portd, int porte)
 	struct rte_mbuf buf, *pbuf = &buf;
 	struct rte_eth_conf null_conf;
 
+	memset(&null_conf, 0, sizeof(struct rte_eth_conf));
+
 	if ((rte_eth_dev_configure(portd, 1, 1, &null_conf) < 0)
 		|| (rte_eth_dev_configure(porte, 1, 1, &null_conf) < 0)) {
 		printf("Configure failed for port\n");
@@ -428,7 +401,7 @@ test_pmd_ring(void)
 	int port, cmdl_port0 = -1;
 	uint8_t nb_ports;
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	printf("nb_ports=%d\n", (int)nb_ports);
 
 	/*  create the rings and eth_rings in the test code.
@@ -502,7 +475,7 @@ test_pmd_ring(void)
 		return -1;
 
 	/* find a port created with the --vdev=net_ring0 command line option */
-	for (port = 0; port < nb_ports; port++) {
+	RTE_ETH_FOREACH_DEV(port) {
 		struct rte_eth_dev_info dev_info;
 
 		rte_eth_dev_info_get(port, &dev_info);

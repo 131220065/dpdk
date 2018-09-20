@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2018 The DPDK contributors
+
 .. submitting_patches:
 
 Contributing Code to DPDK
@@ -32,6 +35,29 @@ It is also worth registering for the DPDK `Patchwork <http://dpdk.org/dev/patchw
 The development process requires some familiarity with the ``git`` version control system.
 Refer to the `Pro Git Book <http://www.git-scm.com/book/>`_ for further information.
 
+Source License
+--------------
+
+The DPDK uses the Open Source BSD-3-Clause license for the core libraries and
+drivers. The kernel components are GPL-2.0 licensed. DPDK uses single line
+reference to Unique License Identifiers in source files as defined by the Linux
+Foundation's `SPDX project <http://spdx.org/>`_.
+
+DPDK uses first line of the file to be SPDX tag. In case of *#!* scripts, SPDX
+tag can be placed in 2nd line of the file.
+
+For example, to label a file as subject to the BSD-3-Clause license,
+the following text would be used:
+
+``SPDX-License-Identifier: BSD-3-Clause``
+
+To label a file as dual-licensed with BSD-3-Clause and GPL-2.0 (e.g., for code
+that is shared between the kernel and userspace), the following text would be
+used:
+
+``SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)``
+
+Refer to ``licenses/README`` for more details.
 
 Maintainers and Sub-trees
 -------------------------
@@ -130,7 +156,7 @@ Make your planned changes in the cloned ``dpdk`` repo. Here are some guidelines 
 * Don't break compilation between commits with forward dependencies in a patchset.
   Each commit should compile on its own to allow for ``git bisect`` and continuous integration testing.
 
-* Add tests to the the ``app/test`` unit test framework where possible.
+* Add tests to the ``app/test`` unit test framework where possible.
 
 * Add documentation, if relevant, in the form of Doxygen comments or a User Guide in RST format.
   See the :ref:`Documentation Guidelines <doc_guidelines>`.
@@ -232,6 +258,66 @@ Here are some guidelines for the body of a commit message:
 In addition to the ``Signed-off-by:`` name the commit messages can also have
 tags for who reported, suggested, tested and reviewed the patch being
 posted. Please refer to the `Tested, Acked and Reviewed by`_ section.
+
+Patch Fix Related Issues
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+`Coverity <https://scan.coverity.com/projects/dpdk-data-plane-development-kit>`_
+is a tool for static code analysis.
+It is used as a cloud-based service used to scan the DPDK source code,
+and alert developers of any potential defects in the source code.
+When fixing an issue found by Coverity, the patch must contain a Coverity issue ID
+in the body of the commit message. For example::
+
+
+     doc: fix some parameter description
+
+     Update the docs, fixing description of some parameter.
+
+     Coverity issue: 12345
+     Fixes: abcdefgh1234 ("doc: add some parameter")
+     Cc: author@example.com
+
+     Signed-off-by: Alex Smith <alex.smith@example.com>
+
+
+`Bugzilla <https://dpdk.org/tracker>`_
+is a bug- or issue-tracking system.
+Bug-tracking systems allow individual or groups of developers
+effectively to keep track of outstanding problems with their product.
+When fixing an issue raised in Bugzilla, the patch must contain
+a Bugzilla issue ID in the body of the commit message.
+For example::
+
+    doc: fix some parameter description
+
+    Update the docs, fixing description of some parameter.
+
+    Bugzilla ID: 12345
+    Fixes: abcdefgh1234 ("doc: add some parameter")
+    Cc: author@example.com
+
+    Signed-off-by: Alex Smith <alex.smith@example.com>
+
+Patch for Stable Releases
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All fix patches to the master branch that are candidates for backporting
+should also be CCed to the `stable@dpdk.org <http://dpdk.org/ml/listinfo/stable>`_
+mailing list.
+In the commit message body the Cc: stable@dpdk.org should be inserted as follows::
+
+     doc: fix some parameter description
+
+     Update the docs, fixing description of some parameter.
+
+     Fixes: abcdefgh1234 ("doc: add some parameter")
+     Cc: stable@dpdk.org
+
+     Signed-off-by: Alex Smith <alex.smith@example.com>
+
+For further information on stable contribution you can go to
+:doc:`Stable Contribution Guide <stable>`.
 
 
 Creating Patches
@@ -340,7 +426,7 @@ Where the range is a ``git log`` option.
 Checking Compilation
 --------------------
 
-Compilation of patches and changes should be tested using the the ``test-build.sh`` script in the ``devtools``
+Compilation of patches and changes should be tested using the ``test-build.sh`` script in the ``devtools``
 directory of the DPDK repo::
 
   devtools/test-build.sh x86_64-native-linuxapp-gcc+next+shared
@@ -367,7 +453,6 @@ The builds can be modified via the following environmental variables:
 * ``DPDK_BUILD_TEST_CONFIGS`` (target1+option1+option2 target2)
 * ``DPDK_DEP_CFLAGS``
 * ``DPDK_DEP_LDFLAGS``
-* ``DPDK_DEP_MOFED`` (y/[n])
 * ``DPDK_DEP_PCAP`` (y/[n])
 * ``DPDK_NOTIFY`` (notify-send)
 
@@ -404,6 +489,10 @@ The appropriate maintainer can be found in the ``MAINTAINERS`` file::
 
    git send-email --to maintainer@some.org --cc dev@dpdk.org 000*.patch
 
+Script ``get-maintainer.sh`` can be used to select maintainers automatically::
+
+  git send-email --to-cmd ./devtools/get-maintainer.sh --cc dev@dpdk.org 000*.patch
+
 New additions can be sent without a maintainer::
 
    git send-email --to dev@dpdk.org 000*.patch
@@ -422,6 +511,20 @@ Once submitted your patches will appear on the mailing list and in Patchwork.
 
 Experienced committers may send patches directly with ``git send-email`` without the ``git format-patch`` step.
 The options ``--annotate`` and ``confirm = always`` are recommended for checking patches before sending.
+
+
+Backporting patches for Stable Releases
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sometimes a maintainer or contributor wishes, or can be asked, to send a patch
+for a stable release rather than mainline.
+In this case the patch(es) should be sent to ``stable@dpdk.org``,
+not to ``dev@dpdk.org``.
+
+Given that there are multiple stable releases being maintained at the same time,
+please specify exactly which branch(es) the patch is for
+using ``git send-email --subject-prefix='PATCH 16.11' ...``
+and also optionally in the cover letter or in the annotation.
 
 
 The Review Process
@@ -525,3 +628,12 @@ patch accepted. The general cycle for patch review and acceptance is:
      than rework of the original.
    * Trivial patches may be merged sooner than described above at the tree committer's
      discretion.
+
+DPDK Maintainers
+----------------
+
+The following are the DPDK maintainers as listed in the ``MAINTAINERS`` file
+in the DPDK root directory.
+
+.. literalinclude:: ../../../MAINTAINERS
+   :lines: 3-

@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #include <unistd.h>
@@ -283,10 +255,12 @@ fs_dev_remove(struct sub_device *sdev)
 		return;
 	switch (sdev->state) {
 	case DEV_STARTED:
+		failsafe_rx_intr_uninstall_subdevice(sdev);
 		rte_eth_dev_stop(PORT_ID(sdev));
 		sdev->state = DEV_ACTIVE;
 		/* fallthrough */
 	case DEV_ACTIVE:
+		failsafe_eth_dev_unregister_callbacks(sdev);
 		rte_eth_dev_close(PORT_ID(sdev));
 		sdev->state = DEV_PROBED;
 		/* fallthrough */
@@ -297,7 +271,7 @@ fs_dev_remove(struct sub_device *sdev)
 			ERROR("Bus detach failed for sub_device %u",
 			      SUB_ID(sdev));
 		} else {
-			ETH(sdev)->state = RTE_ETH_DEV_UNUSED;
+			rte_eth_dev_release_port(ETH(sdev));
 		}
 		sdev->state = DEV_PARSED;
 		/* fallthrough */
@@ -307,6 +281,7 @@ fs_dev_remove(struct sub_device *sdev)
 		/* the end */
 		break;
 	}
+	sdev->remove = 0;
 	failsafe_hotplug_alarm_install(sdev->fs_dev);
 }
 
@@ -347,6 +322,35 @@ fs_rxtx_clean(struct sub_device *sdev)
 }
 
 void
+failsafe_eth_dev_unregister_callbacks(struct sub_device *sdev)
+{
+	int ret;
+
+	if (sdev == NULL)
+		return;
+	if (sdev->rmv_callback) {
+		ret = rte_eth_dev_callback_unregister(PORT_ID(sdev),
+						RTE_ETH_EVENT_INTR_RMV,
+						failsafe_eth_rmv_event_callback,
+						sdev);
+		if (ret)
+			WARN("Failed to unregister RMV callback for sub_device"
+			     " %d", SUB_ID(sdev));
+		sdev->rmv_callback = 0;
+	}
+	if (sdev->lsc_callback) {
+		ret = rte_eth_dev_callback_unregister(PORT_ID(sdev),
+						RTE_ETH_EVENT_INTR_LSC,
+						failsafe_eth_lsc_event_callback,
+						sdev);
+		if (ret)
+			WARN("Failed to unregister LSC callback for sub_device"
+			     " %d", SUB_ID(sdev));
+		sdev->lsc_callback = 0;
+	}
+}
+
+void
 failsafe_dev_remove(struct rte_eth_dev *dev)
 {
 	struct sub_device *sdev;
@@ -354,8 +358,11 @@ failsafe_dev_remove(struct rte_eth_dev *dev)
 
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE)
 		if (sdev->remove && fs_rxtx_clean(sdev)) {
+			if (fs_lock(dev, 1) != 0)
+				return;
 			fs_dev_stats_save(sdev);
 			fs_dev_remove(sdev);
+			fs_unlock(dev, 1);
 		}
 }
 
@@ -455,6 +462,7 @@ failsafe_eth_rmv_event_callback(uint16_t port_id __rte_unused,
 {
 	struct sub_device *sdev = cb_arg;
 
+	fs_lock(sdev->fs_dev, 0);
 	/* Switch as soon as possible tx_dev. */
 	fs_switch_dev(sdev->fs_dev, sdev);
 	/* Use safe bursts in any case. */
@@ -464,6 +472,7 @@ failsafe_eth_rmv_event_callback(uint16_t port_id __rte_unused,
 	 * the callback at the source of the current thread context.
 	 */
 	sdev->remove = 1;
+	fs_unlock(sdev->fs_dev, 0);
 	return 0;
 }
 
@@ -480,7 +489,30 @@ failsafe_eth_lsc_event_callback(uint16_t port_id __rte_unused,
 	if (ret)
 		return _rte_eth_dev_callback_process(dev,
 						     RTE_ETH_EVENT_INTR_LSC,
-						     NULL, NULL);
+						     NULL);
 	else
 		return 0;
+}
+
+/* Take sub-device ownership before it becomes exposed to the application. */
+int
+failsafe_eth_new_event_callback(uint16_t port_id,
+				enum rte_eth_event_type event __rte_unused,
+				void *cb_arg, void *out __rte_unused)
+{
+	struct rte_eth_dev *fs_dev = cb_arg;
+	struct sub_device *sdev;
+	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+	uint8_t i;
+
+	FOREACH_SUBDEV_STATE(sdev, i, fs_dev, DEV_PARSED) {
+		if (sdev->state >= DEV_PROBED)
+			continue;
+		if (strcmp(sdev->devargs.name, dev->device->name) != 0)
+			continue;
+		rte_eth_dev_owner_set(port_id, &PRIV(fs_dev)->my_owner);
+		/* The actual owner will be checked after the port probing. */
+		break;
+	}
+	return 0;
 }

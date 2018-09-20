@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -325,7 +296,7 @@ pci_vfio_is_ioport_bar(int vfio_dev_fd, int bar_index)
 }
 
 static int
-pci_vfio_setup_device(struct rte_pci_device *dev, int vfio_dev_fd)
+pci_rte_vfio_setup_device(struct rte_pci_device *dev, int vfio_dev_fd)
 {
 	if (pci_vfio_setup_interrupts(dev, vfio_dev_fd) != 0) {
 		RTE_LOG(ERR, EAL, "Error setting up interrupts!\n");
@@ -459,13 +430,12 @@ pci_vfio_map_resource_primary(struct rte_pci_device *dev)
 	struct pci_map *maps;
 
 	dev->intr_handle.fd = -1;
-	dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
 
 	/* store PCI address string */
 	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
 			loc->domain, loc->bus, loc->devid, loc->function);
 
-	ret = vfio_setup_device(pci_get_sysfs_path(), pci_addr,
+	ret = rte_vfio_setup_device(rte_pci_get_sysfs_path(), pci_addr,
 					&vfio_dev_fd, &device_info);
 	if (ret)
 		return ret;
@@ -546,7 +516,7 @@ pci_vfio_map_resource_primary(struct rte_pci_device *dev)
 		dev->mem_resource[i].addr = maps[i].addr;
 	}
 
-	if (pci_vfio_setup_device(dev, vfio_dev_fd) < 0) {
+	if (pci_rte_vfio_setup_device(dev, vfio_dev_fd) < 0) {
 		RTE_LOG(ERR, EAL, "  %s setup device failed\n", pci_addr);
 		goto err_vfio_res;
 	}
@@ -576,20 +546,19 @@ pci_vfio_map_resource_secondary(struct rte_pci_device *dev)
 	struct pci_map *maps;
 
 	dev->intr_handle.fd = -1;
-	dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
 
 	/* store PCI address string */
 	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
 			loc->domain, loc->bus, loc->devid, loc->function);
 
-	ret = vfio_setup_device(pci_get_sysfs_path(), pci_addr,
+	ret = rte_vfio_setup_device(rte_pci_get_sysfs_path(), pci_addr,
 					&vfio_dev_fd, &device_info);
 	if (ret)
 		return ret;
 
 	/* if we're in a secondary process, just find our tailq entry */
 	TAILQ_FOREACH(vfio_res, vfio_res_list, next) {
-		if (pci_addr_cmp(&vfio_res->pci_addr,
+		if (rte_pci_addr_cmp(&vfio_res->pci_addr,
 						 &dev->addr))
 			continue;
 		break;
@@ -615,6 +584,9 @@ pci_vfio_map_resource_secondary(struct rte_pci_device *dev)
 		dev->mem_resource[i].addr = maps[i].addr;
 	}
 
+	/* we need save vfio_dev_fd, so it can be used during release */
+	dev->intr_handle.vfio_dev_fd = vfio_dev_fd;
+
 	return 0;
 err_vfio_dev_fd:
 	close(vfio_dev_fd);
@@ -634,61 +606,29 @@ pci_vfio_map_resource(struct rte_pci_device *dev)
 		return pci_vfio_map_resource_secondary(dev);
 }
 
-int
-pci_vfio_unmap_resource(struct rte_pci_device *dev)
+static struct mapped_pci_resource *
+find_and_unmap_vfio_resource(struct mapped_pci_res_list *vfio_res_list,
+			struct rte_pci_device *dev,
+			const char *pci_addr)
 {
-	char pci_addr[PATH_MAX] = {0};
-	struct rte_pci_addr *loc = &dev->addr;
-	int i, ret;
 	struct mapped_pci_resource *vfio_res = NULL;
-	struct mapped_pci_res_list *vfio_res_list;
-
 	struct pci_map *maps;
+	int i;
 
-	/* store PCI address string */
-	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
-			loc->domain, loc->bus, loc->devid, loc->function);
-
-
-	if (close(dev->intr_handle.fd) < 0) {
-		RTE_LOG(INFO, EAL, "Error when closing eventfd file descriptor for %s\n",
-			pci_addr);
-		return -1;
-	}
-
-	if (pci_vfio_set_bus_master(dev->intr_handle.vfio_dev_fd, false)) {
-		RTE_LOG(ERR, EAL, "  %s cannot unset bus mastering for PCI device!\n",
-				pci_addr);
-		return -1;
-	}
-
-	ret = vfio_release_device(pci_get_sysfs_path(), pci_addr,
-				  dev->intr_handle.vfio_dev_fd);
-	if (ret < 0) {
-		RTE_LOG(ERR, EAL,
-			"%s(): cannot release device\n", __func__);
-		return ret;
-	}
-
-	vfio_res_list = RTE_TAILQ_CAST(rte_vfio_tailq.head, mapped_pci_res_list);
 	/* Get vfio_res */
 	TAILQ_FOREACH(vfio_res, vfio_res_list, next) {
-		if (memcmp(&vfio_res->pci_addr, &dev->addr, sizeof(dev->addr)))
+		if (rte_pci_addr_cmp(&vfio_res->pci_addr, &dev->addr))
 			continue;
 		break;
 	}
-	/* if we haven't found our tailq entry, something's wrong */
-	if (vfio_res == NULL) {
-		RTE_LOG(ERR, EAL, "  %s cannot find TAILQ entry for PCI device!\n",
-				pci_addr);
-		return -1;
-	}
 
-	/* unmap BARs */
-	maps = vfio_res->maps;
+	if  (vfio_res == NULL)
+		return vfio_res;
 
 	RTE_LOG(INFO, EAL, "Releasing pci mapped resource for %s\n",
 		pci_addr);
+
+	maps = vfio_res->maps;
 	for (i = 0; i < (int) vfio_res->nb_maps; i++) {
 
 		/*
@@ -702,9 +642,100 @@ pci_vfio_unmap_resource(struct rte_pci_device *dev)
 		}
 	}
 
+	return vfio_res;
+}
+
+static int
+pci_vfio_unmap_resource_primary(struct rte_pci_device *dev)
+{
+	char pci_addr[PATH_MAX] = {0};
+	struct rte_pci_addr *loc = &dev->addr;
+	struct mapped_pci_resource *vfio_res = NULL;
+	struct mapped_pci_res_list *vfio_res_list;
+	int ret;
+
+	/* store PCI address string */
+	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
+			loc->domain, loc->bus, loc->devid, loc->function);
+
+	if (close(dev->intr_handle.fd) < 0) {
+		RTE_LOG(INFO, EAL, "Error when closing eventfd file descriptor for %s\n",
+			pci_addr);
+		return -1;
+	}
+
+	if (pci_vfio_set_bus_master(dev->intr_handle.vfio_dev_fd, false)) {
+		RTE_LOG(ERR, EAL, "  %s cannot unset bus mastering for PCI device!\n",
+				pci_addr);
+		return -1;
+	}
+
+	ret = rte_vfio_release_device(rte_pci_get_sysfs_path(), pci_addr,
+				  dev->intr_handle.vfio_dev_fd);
+	if (ret < 0) {
+		RTE_LOG(ERR, EAL,
+			"%s(): cannot release device\n", __func__);
+		return ret;
+	}
+
+	vfio_res_list =
+		RTE_TAILQ_CAST(rte_vfio_tailq.head, mapped_pci_res_list);
+	vfio_res = find_and_unmap_vfio_resource(vfio_res_list, dev, pci_addr);
+
+	/* if we haven't found our tailq entry, something's wrong */
+	if (vfio_res == NULL) {
+		RTE_LOG(ERR, EAL, "  %s cannot find TAILQ entry for PCI device!\n",
+				pci_addr);
+		return -1;
+	}
+
 	TAILQ_REMOVE(vfio_res_list, vfio_res, next);
 
 	return 0;
+}
+
+static int
+pci_vfio_unmap_resource_secondary(struct rte_pci_device *dev)
+{
+	char pci_addr[PATH_MAX] = {0};
+	struct rte_pci_addr *loc = &dev->addr;
+	struct mapped_pci_resource *vfio_res = NULL;
+	struct mapped_pci_res_list *vfio_res_list;
+	int ret;
+
+	/* store PCI address string */
+	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
+			loc->domain, loc->bus, loc->devid, loc->function);
+
+	ret = rte_vfio_release_device(rte_pci_get_sysfs_path(), pci_addr,
+				  dev->intr_handle.vfio_dev_fd);
+	if (ret < 0) {
+		RTE_LOG(ERR, EAL,
+			"%s(): cannot release device\n", __func__);
+		return ret;
+	}
+
+	vfio_res_list =
+		RTE_TAILQ_CAST(rte_vfio_tailq.head, mapped_pci_res_list);
+	vfio_res = find_and_unmap_vfio_resource(vfio_res_list, dev, pci_addr);
+
+	/* if we haven't found our tailq entry, something's wrong */
+	if (vfio_res == NULL) {
+		RTE_LOG(ERR, EAL, "  %s cannot find TAILQ entry for PCI device!\n",
+				pci_addr);
+		return -1;
+	}
+
+	return 0;
+}
+
+int
+pci_vfio_unmap_resource(struct rte_pci_device *dev)
+{
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		return pci_vfio_unmap_resource_primary(dev);
+	else
+		return pci_vfio_unmap_resource_secondary(dev);
 }
 
 int
@@ -758,6 +789,6 @@ pci_vfio_ioport_unmap(struct rte_pci_ioport *p)
 int
 pci_vfio_is_enabled(void)
 {
-	return vfio_is_enabled("vfio_pci");
+	return rte_vfio_is_enabled("vfio_pci");
 }
 #endif

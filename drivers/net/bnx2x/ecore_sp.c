@@ -1,16 +1,14 @@
-/*-
- * Copyright (c) 2007-2013 QLogic Corporation. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2007-2013 Broadcom Corporation.
  *
  * Eric Davis        <edavis@broadcom.com>
  * David Christensen <davidch@broadcom.com>
  * Gary Zambrano     <zambrano@broadcom.com>
  *
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bnx2x.h"
@@ -3402,7 +3400,7 @@ void ecore_init_mac_credit_pool(struct bnx2x_softc *sc,
 		/* CAM credit is equally divided between all active functions
 		 * on the PORT!.
 		 */
-		if ((func_num > 0)) {
+		if (func_num > 0) {
 			if (!CHIP_REV_IS_SLOW(sc))
 				cam_sz = (MAX_MAC_CREDIT_E1H / (2 * func_num));
 			else
@@ -3419,7 +3417,7 @@ void ecore_init_mac_credit_pool(struct bnx2x_softc *sc,
 		 * CAM credit is equaly divided between all active functions
 		 * on the PATH.
 		 */
-		if ((func_num > 0)) {
+		if (func_num > 0) {
 			if (!CHIP_REV_IS_SLOW(sc))
 				cam_sz = (MAX_MAC_CREDIT_E2 / func_num);
 			else

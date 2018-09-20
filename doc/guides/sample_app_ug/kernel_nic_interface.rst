@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Kernel NIC Interface Sample Application
 =======================================
@@ -181,7 +154,7 @@ and one lcore of kernel thread for each port:
 
 .. code-block:: console
 
-    ./build/kni -l 4-7 -n 4 -- -P -p 0x3 -config="(0,4,6,8),(1,5,7,9)"
+    ./build/kni -l 4-7 -n 4 -- -P -p 0x3 --config="(0,4,6,8),(1,5,7,9)"
 
 KNI Operations
 --------------
@@ -209,6 +182,12 @@ Dumping the network traffic:
 
     #tcpdump -i vEth0_0
 
+Change the MAC address:
+
+.. code-block:: console
+
+    #ifconfig vEth0_0 hw ether 0C:01:02:03:04:08
+
 When the DPDK userspace application is closed, all the KNI devices are deleted from Linux*.
 
 Explanation
@@ -223,70 +202,8 @@ Setup of mbuf pool, driver and queues is similar to the setup done in the :doc:`
 In addition, one or more kernel NIC interfaces are allocated for each
 of the configured ports according to the command line parameters.
 
-The code for allocating the kernel NIC interfaces for a specific port is as follows:
-
-.. code-block:: c
-
-    static int
-    kni_alloc(uint16_t port_id)
-    {
-        uint8_t i;
-        struct rte_kni *kni;
-        struct rte_kni_conf conf;
-        struct kni_port_params **params = kni_port_params_array;
-
-        if (port_id >= RTE_MAX_ETHPORTS || !params[port_id])
-            return -1;
-
-        params[port_id]->nb_kni = params[port_id]->nb_lcore_k ? params[port_id]->nb_lcore_k : 1;
-
-        for (i = 0; i < params[port_id]->nb_kni; i++) {
-
-            /* Clear conf at first */
-
-            memset(&conf, 0, sizeof(conf));
-            if (params[port_id]->nb_lcore_k) {
-                snprintf(conf.name, RTE_KNI_NAMESIZE, "vEth%u_%u", port_id, i);
-                conf.core_id = params[port_id]->lcore_k[i];
-                conf.force_bind = 1;
-            } else
-                snprintf(conf.name, RTE_KNI_NAMESIZE, "vEth%u", port_id);
-                conf.group_id = (uint16_t)port_id;
-                conf.mbuf_size = MAX_PACKET_SZ;
-
-                /*
-                 *   The first KNI device associated to a port
-                 *   is the master, for multiple kernel thread
-                 *   environment.
-                 */
-
-                if (i == 0) {
-                    struct rte_kni_ops ops;
-                    struct rte_eth_dev_info dev_info;
-
-                    memset(&dev_info, 0, sizeof(dev_info)); rte_eth_dev_info_get(port_id, &dev_info);
-
-                    conf.addr = dev_info.pci_dev->addr;
-                    conf.id = dev_info.pci_dev->id;
-
-                    memset(&ops, 0, sizeof(ops));
-
-                    ops.port_id = port_id;
-                    ops.change_mtu = kni_change_mtu;
-                    ops.config_network_if = kni_config_network_interface;
-
-                    kni = rte_kni_alloc(pktmbuf_pool, &conf, &ops);
-                } else
-                    kni = rte_kni_alloc(pktmbuf_pool, &conf, NULL);
-
-                if (!kni)
-                    rte_exit(EXIT_FAILURE, "Fail to create kni for "
-                            "port: %d\n", port_id);
-
-                params[port_id]->kni[i] = kni;
-            }
-        return 0;
-   }
+The code for allocating the kernel NIC interfaces for a specific port is
+in the function ``kni_alloc``.
 
 The other step in the initialization process that is unique to this sample application
 is the association of each port with lcores for RX, TX and kernel threads.
@@ -297,105 +214,8 @@ is the association of each port with lcores for RX, TX and kernel threads.
 
 *   Other lcores for pinning the kernel threads on one by one
 
-This is done by using the`kni_port_params_array[]` array, which is indexed by the port ID.
-The code is as follows:
-
-.. code-block:: console
-
-    static int
-    parse_config(const char *arg)
-    {
-        const char *p, *p0 = arg;
-        char s[256], *end;
-        unsigned size;
-        enum fieldnames {
-            FLD_PORT = 0,
-            FLD_LCORE_RX,
-            FLD_LCORE_TX,
-            _NUM_FLD = KNI_MAX_KTHREAD + 3,
-        };
-        int i, j, nb_token;
-        char *str_fld[_NUM_FLD];
-        unsigned long int_fld[_NUM_FLD];
-        uint16_t port_id, nb_kni_port_params = 0;
-
-        memset(&kni_port_params_array, 0, sizeof(kni_port_params_array));
-
-        while (((p = strchr(p0, '(')) != NULL) && nb_kni_port_params < RTE_MAX_ETHPORTS) {
-            p++;
-            if ((p0 = strchr(p, ')')) == NULL)
-                goto fail;
-
-            size = p0 - p;
-
-            if (size >= sizeof(s)) {
-                printf("Invalid config parameters\n");
-                goto fail;
-            }
-
-            snprintf(s, sizeof(s), "%.*s", size, p);
-            nb_token = rte_strsplit(s, sizeof(s), str_fld, _NUM_FLD, ',');
-
-            if (nb_token <= FLD_LCORE_TX) {
-                printf("Invalid config parameters\n");
-                goto fail;
-            }
-
-            for (i = 0; i < nb_token; i++) {
-                errno = 0;
-                int_fld[i] = strtoul(str_fld[i], &end, 0);
-                if (errno != 0 || end == str_fld[i]) {
-                    printf("Invalid config parameters\n");
-                    goto fail;
-                }
-            }
-
-            i = 0;
-            port_id = (uint8_t)int_fld[i++];
-
-            if (port_id >= RTE_MAX_ETHPORTS) {
-                printf("Port ID %u could not exceed the maximum %u\n", port_id, RTE_MAX_ETHPORTS);
-                goto fail;
-            }
-
-            if (kni_port_params_array[port_id]) {
-                printf("Port %u has been configured\n", port_id);
-                goto fail;
-            }
-
-            kni_port_params_array[port_id] = (struct kni_port_params*)rte_zmalloc("KNI_port_params", sizeof(struct kni_port_params), RTE_CACHE_LINE_SIZE);
-            kni_port_params_array[port_id]->port_id = port_id;
-            kni_port_params_array[port_id]->lcore_rx = (uint8_t)int_fld[i++];
-            kni_port_params_array[port_id]->lcore_tx = (uint8_t)int_fld[i++];
-
-            if (kni_port_params_array[port_id]->lcore_rx >= RTE_MAX_LCORE || kni_port_params_array[port_id]->lcore_tx >= RTE_MAX_LCORE) {
-                printf("lcore_rx %u or lcore_tx %u ID could not "
-                        "exceed the maximum %u\n",
-                        kni_port_params_array[port_id]->lcore_rx, kni_port_params_array[port_id]->lcore_tx, RTE_MAX_LCORE);
-                goto fail;
-           }
-
-        for (j = 0; i < nb_token && j < KNI_MAX_KTHREAD; i++, j++)
-            kni_port_params_array[port_id]->lcore_k[j] = (uint8_t)int_fld[i];
-            kni_port_params_array[port_id]->nb_lcore_k = j;
-        }
-
-        print_config();
-
-        return 0;
-
-    fail:
-
-        for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
-            if (kni_port_params_array[i]) {
-                rte_free(kni_port_params_array[i]);
-                kni_port_params_array[i] = NULL;
-            }
-        }
-
-        return -1;
-
-    }
+This is done by using the ``kni_port_params_array[]`` array, which is indexed by the port ID.
+The code is in the function ``parse_config``.
 
 Packet Forwarding
 ~~~~~~~~~~~~~~~~~
@@ -404,186 +224,27 @@ After the initialization steps are completed, the main_loop() function is run on
 This function first checks the lcore_id against the user provided lcore_rx and lcore_tx
 to see if this lcore is reading from or writing to kernel NIC interfaces.
 
-For the case that reads from a NIC port and writes to the kernel NIC interfaces,
+For the case that reads from a NIC port and writes to the kernel NIC interfaces (``kni_ingress``),
 the packet reception is the same as in L2 Forwarding sample application
 (see :ref:`l2_fwd_app_rx_tx_packets`).
 The packet transmission is done by sending mbufs into the kernel NIC interfaces by rte_kni_tx_burst().
 The KNI library automatically frees the mbufs after the kernel successfully copied the mbufs.
 
-.. code-block:: c
-
-    /**
-     *   Interface to burst rx and enqueue mbufs into rx_q
-     */
-
-    static void
-    kni_ingress(struct kni_port_params *p)
-    {
-        uint8_t i, nb_kni, port_id;
-        unsigned nb_rx, num;
-        struct rte_mbuf *pkts_burst[PKT_BURST_SZ];
-
-        if (p == NULL)
-            return;
-
-        nb_kni = p->nb_kni;
-        port_id = p->port_id;
-
-        for (i = 0; i < nb_kni; i++) {
-            /* Burst rx from eth */
-            nb_rx = rte_eth_rx_burst(port_id, 0, pkts_burst, PKT_BURST_SZ);
-            if (unlikely(nb_rx > PKT_BURST_SZ)) {
-                RTE_LOG(ERR, APP, "Error receiving from eth\n");
-                return;
-            }
-
-            /* Burst tx to kni */
-            num = rte_kni_tx_burst(p->kni[i], pkts_burst, nb_rx);
-            kni_stats[port_id].rx_packets += num;
-            rte_kni_handle_request(p->kni[i]);
-
-            if (unlikely(num < nb_rx)) {
-                /* Free mbufs not tx to kni interface */
-                kni_burst_free_mbufs(&pkts_burst[num], nb_rx - num);
-                kni_stats[port_id].rx_dropped += nb_rx - num;
-            }
-        }
-    }
-
-For the other case that reads from kernel NIC interfaces and writes to a physical NIC port, packets are retrieved by reading
-mbufs from kernel NIC interfaces by `rte_kni_rx_burst()`.
+For the other case that reads from kernel NIC interfaces
+and writes to a physical NIC port (``kni_egress``),
+packets are retrieved by reading mbufs from kernel NIC interfaces by ``rte_kni_rx_burst()``.
 The packet transmission is the same as in the L2 Forwarding sample application
 (see :ref:`l2_fwd_app_rx_tx_packets`).
-
-.. code-block:: c
-
-    /**
-     *   Interface to dequeue mbufs from tx_q and burst tx
-     */
-
-    static void
-
-    kni_egress(struct kni_port_params *p)
-    {
-        uint8_t i, nb_kni, port_id;
-        unsigned nb_tx, num;
-        struct rte_mbuf *pkts_burst[PKT_BURST_SZ];
-
-        if (p == NULL)
-            return;
-
-        nb_kni = p->nb_kni;
-        port_id = p->port_id;
-
-        for (i = 0; i < nb_kni; i++) {
-            /* Burst rx from kni */
-            num = rte_kni_rx_burst(p->kni[i], pkts_burst, PKT_BURST_SZ);
-            if (unlikely(num > PKT_BURST_SZ)) {
-                RTE_LOG(ERR, APP, "Error receiving from KNI\n");
-                return;
-            }
-
-            /* Burst tx to eth */
-
-            nb_tx = rte_eth_tx_burst(port_id, 0, pkts_burst, (uint16_t)num);
-
-            kni_stats[port_id].tx_packets += nb_tx;
-
-            if (unlikely(nb_tx < num)) {
-                /* Free mbufs not tx to NIC */
-                kni_burst_free_mbufs(&pkts_burst[nb_tx], num - nb_tx);
-                kni_stats[port_id].tx_dropped += num - nb_tx;
-            }
-        }
-    }
 
 Callbacks for Kernel Requests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 To execute specific PMD operations in user space requested by some Linux* commands,
 callbacks must be implemented and filled in the struct rte_kni_ops structure.
-Currently, setting a new MTU and configuring the network interface (up/ down) are supported.
+Currently, setting a new MTU, change in MAC address, configuring promiscusous mode and
+configuring the network interface(up/down) re supported.
+Default implementation for following is available in rte_kni library.
+Application may choose to not implement following callbacks:
 
-.. code-block:: c
-
-    static struct rte_kni_ops kni_ops = {
-        .change_mtu = kni_change_mtu,
-        .config_network_if = kni_config_network_interface,
-    };
-
-    /* Callback for request of changing MTU */
-
-    static int
-    kni_change_mtu(uint16_t port_id, unsigned new_mtu)
-    {
-        int ret;
-        struct rte_eth_conf conf;
-
-        if (port_id >= rte_eth_dev_count()) {
-            RTE_LOG(ERR, APP, "Invalid port id %d\n", port_id);
-            return -EINVAL;
-        }
-
-        RTE_LOG(INFO, APP, "Change MTU of port %d to %u\n", port_id, new_mtu);
-
-        /* Stop specific port */
-
-        rte_eth_dev_stop(port_id);
-
-        memcpy(&conf, &port_conf, sizeof(conf));
-
-        /* Set new MTU */
-
-        if (new_mtu > ETHER_MAX_LEN)
-            conf.rxmode.jumbo_frame = 1;
-        else
-            conf.rxmode.jumbo_frame = 0;
-
-        /* mtu + length of header + length of FCS = max pkt length */
-
-        conf.rxmode.max_rx_pkt_len = new_mtu + KNI_ENET_HEADER_SIZE + KNI_ENET_FCS_SIZE;
-
-        ret = rte_eth_dev_configure(port_id, 1, 1, &conf);
-        if (ret < 0) {
-            RTE_LOG(ERR, APP, "Fail to reconfigure port %d\n", port_id);
-            return ret;
-        }
-
-        /* Restart specific port */
-
-        ret = rte_eth_dev_start(port_id);
-        if (ret < 0) {
-             RTE_LOG(ERR, APP, "Fail to restart port %d\n", port_id);
-            return ret;
-        }
-
-        return 0;
-    }
-
-    /* Callback for request of configuring network interface up/down */
-
-    static int
-    kni_config_network_interface(uint16_t port_id, uint8_t if_up)
-    {
-        int ret = 0;
-
-        if (port_id >= rte_eth_dev_count() || port_id >= RTE_MAX_ETHPORTS) {
-            RTE_LOG(ERR, APP, "Invalid port id %d\n", port_id);
-            return -EINVAL;
-        }
-
-        RTE_LOG(INFO, APP, "Configure network interface of %d %s\n",
-
-        port_id, if_up ? "up" : "down");
-
-        if (if_up != 0) {
-            /* Configure network interface up */
-            rte_eth_dev_stop(port_id);
-            ret = rte_eth_dev_start(port_id);
-        } else /* Configure network interface down */
-            rte_eth_dev_stop(port_id);
-
-        if (ret < 0)
-            RTE_LOG(ERR, APP, "Failed to start port %d\n", port_id);
-        return ret;
-    }
+- ``config_mac_address``
+- ``config_promiscusity``

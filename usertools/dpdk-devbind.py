@@ -1,35 +1,6 @@
 #! /usr/bin/env python
-#
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2014 Intel Corporation
 #
 
 import sys
@@ -51,11 +22,18 @@ cavium_fpa = {'Class': '08', 'Vendor': '177d', 'Device': 'a053',
               'SVendor': None, 'SDevice': None}
 cavium_pkx = {'Class': '08', 'Vendor': '177d', 'Device': 'a0dd,a049',
               'SVendor': None, 'SDevice': None}
+cavium_tim = {'Class': '08', 'Vendor': '177d', 'Device': 'a051',
+              'SVendor': None, 'SDevice': None}
+cavium_zip = {'Class': '12', 'Vendor': '177d', 'Device': 'a037',
+              'SVendor': None, 'SDevice': None}
+avp_vnic = {'Class': '05', 'Vendor': '1af4', 'Device': '1110',
+              'SVendor': None, 'SDevice': None}
 
-network_devices = [network_class, cavium_pkx]
+network_devices = [network_class, cavium_pkx, avp_vnic]
 crypto_devices = [encryption_class, intel_processor_class]
-eventdev_devices = [cavium_sso]
+eventdev_devices = [cavium_sso, cavium_tim]
 mempool_devices = [cavium_fpa]
+compress_devices = [cavium_zip]
 
 # global dict ethernet devices present. Dictionary indexed by PCI address.
 # Each device within this is itself a dictionary of device properties
@@ -104,7 +82,7 @@ Options:
 
     --status-dev:
         Print the status of given device group. Supported device groups are:
-        "net", "crypto", "event" and "mempool"
+        "net", "crypto", "event", "mempool" and "compress"
 
     -b driver, --bind=driver:
         Select the driver to use or \"none\" to unbind the device
@@ -149,39 +127,6 @@ def check_output(args, stderr=None):
                             stderr=stderr).communicate()[0]
 
 
-def find_module(mod):
-    '''find the .ko file for kernel module named mod.
-    Searches the $RTE_SDK/$RTE_TARGET directory, the kernel
-    modules directory and finally under the parent directory of
-    the script '''
-    # check $RTE_SDK/$RTE_TARGET directory
-    if 'RTE_SDK' in os.environ and 'RTE_TARGET' in os.environ:
-        path = "%s/%s/kmod/%s.ko" % (os.environ['RTE_SDK'],
-                                     os.environ['RTE_TARGET'], mod)
-        if exists(path):
-            return path
-
-    # check using depmod
-    try:
-        with open(os.devnull, "w") as fnull:
-            path = check_output(["modinfo", "-n", mod], stderr=fnull).strip()
-
-        if path and exists(path):
-            return path
-    except:  # if modinfo can't find module, it fails, so continue
-        pass
-
-    # check for a copy based off current path
-    tools_dir = dirname(abspath(sys.argv[0]))
-    if tools_dir.endswith("tools"):
-        base_dir = dirname(tools_dir)
-        find_out = check_output(["find", base_dir, "-name", mod + ".ko"])
-        if len(find_out) > 0:  # something matched
-            path = find_out.splitlines()[0]
-            if exists(path):
-                return path
-
-
 def check_modules():
     '''Checks that igb_uio is loaded'''
     global dpdk_drivers
@@ -204,8 +149,7 @@ def check_modules():
 
         # special case for vfio_pci (module is named vfio-pci,
         # but its .ko is named vfio_pci)
-        sysfs_mods = map(lambda a:
-                         a if a != 'vfio_pci' else 'vfio-pci', sysfs_mods)
+        sysfs_mods = [a if a != 'vfio_pci' else 'vfio-pci' for a in sysfs_mods]
 
         for mod in mods:
             if mod["Name"] in sysfs_mods:
@@ -279,6 +223,8 @@ def get_device_details(devices_type):
                 # of dictionary key names
                 if "Driver" in dev.keys():
                     dev["Driver_str"] = dev.pop("Driver")
+                if "Module" in dev.keys():
+                    dev["Module_str"] = dev.pop("Module")
                 # use dict to make copy of dev
                 devices[dev["Slot"]] = dict(dev)
             # Clear previous device's data
@@ -540,7 +486,7 @@ def bind_all(dev_list, driver, force=False):
     for d in dev_list:
         bind_one(d, driver, force)
 
-    # For kenels < 3.15 when binding devices to a generic driver
+    # For kernels < 3.15 when binding devices to a generic driver
     # (i.e. one that doesn't have a PCI ID table) using new_id, some devices
     # that are not bound to any other driver could be bound even if no one has
     # asked them to. hence, we check the list of drivers again, and see if
@@ -626,6 +572,10 @@ def show_status():
     if status_dev == "mempool" or status_dev == "all":
         show_device_status(mempool_devices, "Mempool")
 
+    if status_dev == "compress" or status_dev == "all":
+        show_device_status(compress_devices , "Compress")
+
+
 def parse_args():
     '''Parses the command-line arguments given by the user and takes the
     appropriate action for each'''
@@ -699,6 +649,7 @@ def do_arg_actions():
             get_device_details(crypto_devices)
             get_device_details(eventdev_devices)
             get_device_details(mempool_devices)
+            get_device_details(compress_devices)
         show_status()
 
 
@@ -711,6 +662,7 @@ def main():
     get_device_details(crypto_devices)
     get_device_details(eventdev_devices)
     get_device_details(mempool_devices)
+    get_device_details(compress_devices)
     do_arg_actions()
 
 if __name__ == "__main__":

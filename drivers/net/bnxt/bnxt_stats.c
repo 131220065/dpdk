@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) Broadcom Limited.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Broadcom Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Broadcom
+ * All rights reserved.
  */
 
 #include <inttypes.h>
@@ -172,8 +144,8 @@ static const struct bnxt_xstats_name_off bnxt_func_stats_strings[] = {
 				tx_mcast_pkts)},
 	{"tx_bcast_pkts", offsetof(struct hwrm_func_qstats_output,
 				tx_bcast_pkts)},
-	{"tx_err_pkts", offsetof(struct hwrm_func_qstats_output,
-				tx_err_pkts)},
+	{"tx_discard_pkts", offsetof(struct hwrm_func_qstats_output,
+				tx_discard_pkts)},
 	{"tx_drop_pkts", offsetof(struct hwrm_func_qstats_output,
 				tx_drop_pkts)},
 	{"tx_ucast_bytes", offsetof(struct hwrm_func_qstats_output,
@@ -188,8 +160,8 @@ static const struct bnxt_xstats_name_off bnxt_func_stats_strings[] = {
 				rx_mcast_pkts)},
 	{"rx_bcast_pkts", offsetof(struct hwrm_func_qstats_output,
 				rx_bcast_pkts)},
-	{"rx_err_pkts", offsetof(struct hwrm_func_qstats_output,
-				rx_err_pkts)},
+	{"rx_discard_pkts", offsetof(struct hwrm_func_qstats_output,
+				rx_discard_pkts)},
 	{"rx_drop_pkts", offsetof(struct hwrm_func_qstats_output,
 				rx_drop_pkts)},
 	{"rx_ucast_bytes", offsetof(struct hwrm_func_qstats_output,
@@ -236,6 +208,10 @@ int bnxt_stats_get_op(struct rte_eth_dev *eth_dev,
 	struct bnxt *bp = eth_dev->data->dev_private;
 
 	memset(bnxt_stats, 0, sizeof(*bnxt_stats));
+	if (!(bp->flags & BNXT_FLAG_INIT_DONE)) {
+		PMD_DRV_LOG(ERR, "Device Initialization not complete!\n");
+		return -1;
+	}
 
 	for (i = 0; i < bp->rx_cp_nr_rings; i++) {
 		struct bnxt_rx_queue *rxq = bp->rx_queues[i];
@@ -245,6 +221,8 @@ int bnxt_stats_get_op(struct rte_eth_dev *eth_dev,
 				     bnxt_stats, 1);
 		if (unlikely(rc))
 			return rc;
+		bnxt_stats->rx_nombuf +=
+				rte_atomic64_read(&rxq->rx_mbuf_alloc_fail);
 	}
 
 	for (i = 0; i < bp->tx_cp_nr_rings; i++) {
@@ -259,16 +237,25 @@ int bnxt_stats_get_op(struct rte_eth_dev *eth_dev,
 	rc = bnxt_hwrm_func_qstats(bp, 0xffff, bnxt_stats);
 	if (unlikely(rc))
 		return rc;
-	bnxt_stats->rx_nombuf = rte_atomic64_read(&bp->rx_mbuf_alloc_fail);
 	return rc;
 }
 
 void bnxt_stats_reset_op(struct rte_eth_dev *eth_dev)
 {
 	struct bnxt *bp = (struct bnxt *)eth_dev->data->dev_private;
+	unsigned int i;
+
+	if (!(bp->flags & BNXT_FLAG_INIT_DONE)) {
+		PMD_DRV_LOG(ERR, "Device Initialization not complete!\n");
+		return;
+	}
 
 	bnxt_clear_all_hwrm_stat_ctxs(bp);
-	rte_atomic64_clear(&bp->rx_mbuf_alloc_fail);
+	for (i = 0; i < bp->rx_cp_nr_rings; i++) {
+		struct bnxt_rx_queue *rxq = bp->rx_queues[i];
+
+		rte_atomic64_clear(&rxq->rx_mbuf_alloc_fail);
+	}
 }
 
 int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
@@ -278,11 +265,6 @@ int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
 
 	unsigned int count, i;
 	uint64_t tx_drop_pkts;
-
-	if (!(bp->flags & BNXT_FLAG_PORT_STATS)) {
-		RTE_LOG(ERR, PMD, "xstats not supported for VF\n");
-		return 0;
-	}
 
 	bnxt_hwrm_port_qstats(bp);
 	bnxt_hwrm_func_qstats_tx_drop(bp, 0xffff, &tx_drop_pkts);
@@ -296,6 +278,7 @@ int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
 	count = 0;
 	for (i = 0; i < RTE_DIM(bnxt_rx_stats_strings); i++) {
 		uint64_t *rx_stats = (uint64_t *)bp->hw_rx_port_stats;
+		xstats[count].id = count;
 		xstats[count].value = rte_le_to_cpu_64(
 				*(uint64_t *)((char *)rx_stats +
 				bnxt_rx_stats_strings[i].offset));
@@ -304,6 +287,7 @@ int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
 
 	for (i = 0; i < RTE_DIM(bnxt_tx_stats_strings); i++) {
 		uint64_t *tx_stats = (uint64_t *)bp->hw_tx_port_stats;
+		xstats[count].id = count;
 		xstats[count].value = rte_le_to_cpu_64(
 				 *(uint64_t *)((char *)tx_stats +
 				bnxt_tx_stats_strings[i].offset));
@@ -311,6 +295,7 @@ int bnxt_dev_xstats_get_op(struct rte_eth_dev *eth_dev,
 	}
 
 	/* The Tx drop pkts aka the Anti spoof coounter */
+	xstats[count].id = count;
 	xstats[count].value = rte_le_to_cpu_64(tx_drop_pkts);
 	count++;
 
@@ -358,15 +343,15 @@ void bnxt_dev_xstats_reset_op(struct rte_eth_dev *eth_dev)
 {
 	struct bnxt *bp = (struct bnxt *)eth_dev->data->dev_private;
 
-	if (bp->flags & BNXT_FLAG_PORT_STATS && !BNXT_NPAR_PF(bp))
+	if (bp->flags & BNXT_FLAG_PORT_STATS && BNXT_SINGLE_PF(bp))
 		bnxt_hwrm_port_clr_stats(bp);
 
 	if (BNXT_VF(bp))
-		RTE_LOG(ERR, PMD, "Operation not supported on a VF device\n");
-	if (BNXT_NPAR_PF(bp))
-		RTE_LOG(ERR, PMD, "Operation not supported on a MF device\n");
+		PMD_DRV_LOG(ERR, "Operation not supported on a VF device\n");
+	if (!BNXT_SINGLE_PF(bp))
+		PMD_DRV_LOG(ERR, "Operation not supported on a MF device\n");
 	if (!(bp->flags & BNXT_FLAG_PORT_STATS))
-		RTE_LOG(ERR, PMD, "Operation not supported\n");
+		PMD_DRV_LOG(ERR, "Operation not supported\n");
 }
 
 int bnxt_dev_xstats_get_by_id_op(struct rte_eth_dev *dev, const uint64_t *ids,
@@ -385,7 +370,7 @@ int bnxt_dev_xstats_get_by_id_op(struct rte_eth_dev *dev, const uint64_t *ids,
 	bnxt_dev_xstats_get_by_id_op(dev, NULL, values_copy, stat_cnt);
 	for (i = 0; i < limit; i++) {
 		if (ids[i] >= stat_cnt) {
-			RTE_LOG(ERR, PMD, "id value isn't valid");
+			PMD_DRV_LOG(ERR, "id value isn't valid");
 			return -1;
 		}
 		values[i] = values_copy[ids[i]];
@@ -411,7 +396,7 @@ int bnxt_dev_xstats_get_names_by_id_op(struct rte_eth_dev *dev,
 
 	for (i = 0; i < limit; i++) {
 		if (ids[i] >= stat_cnt) {
-			RTE_LOG(ERR, PMD, "id value isn't valid");
+			PMD_DRV_LOG(ERR, "id value isn't valid");
 			return -1;
 		}
 		strcpy(xstats_names[i].name,

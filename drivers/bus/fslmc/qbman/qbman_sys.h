@@ -1,29 +1,7 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
  * Copyright (C) 2014-2016 Freescale Semiconductor, Inc.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of Freescale Semiconductor nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY Freescale Semiconductor ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL Freescale Semiconductor BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 /* qbman_sys_decl.h and qbman_sys.h are the two platform-specific files in the
  * driver. They are only included via qbman_private.h, which is itself a
@@ -41,6 +19,9 @@
  */
 
 #include "qbman_sys_decl.h"
+
+#define CENA_WRITE_ENABLE 0
+#define CINH_WRITE_ENABLE 1
 
 /* Debugging assists */
 static inline void __hexdump(unsigned long start, unsigned long end,
@@ -200,7 +181,11 @@ static inline void *qbman_cena_write_start_wo_shadow(struct qbman_swp_sys *s,
 		s->addr_cena, s->idx, offset);
 #endif
 	QBMAN_BUG_ON(offset & 63);
+#ifdef RTE_ARCH_64
 	return (s->addr_cena + offset);
+#else
+	return (s->addr_cinh + offset);
+#endif
 }
 
 static inline void qbman_cena_write_complete(struct qbman_swp_sys *s,
@@ -213,11 +198,19 @@ static inline void qbman_cena_write_complete(struct qbman_swp_sys *s,
 		s->addr_cena, s->idx, offset, shadow);
 	hexdump(cmd, 64);
 #endif
+#ifdef RTE_ARCH_64
 	for (loop = 15; loop >= 1; loop--)
 		__raw_writel(shadow[loop], s->addr_cena +
 					 offset + loop * 4);
 	lwsync();
 		__raw_writel(shadow[0], s->addr_cena + offset);
+#else
+	for (loop = 15; loop >= 1; loop--)
+		__raw_writel(shadow[loop], s->addr_cinh +
+					 offset + loop * 4);
+	lwsync();
+	__raw_writel(shadow[0], s->addr_cinh + offset);
+#endif
 	dcbf(s->addr_cena + offset);
 }
 
@@ -246,9 +239,15 @@ static inline void *qbman_cena_read(struct qbman_swp_sys *s, uint32_t offset)
 		s->addr_cena, s->idx, offset, shadow);
 #endif
 
+#ifdef RTE_ARCH_64
 	for (loop = 0; loop < 16; loop++)
 		shadow[loop] = __raw_readl(s->addr_cena + offset
 					+ loop * 4);
+#else
+	for (loop = 0; loop < 16; loop++)
+		shadow[loop] = __raw_readl(s->addr_cinh + offset
+					+ loop * 4);
+#endif
 #ifdef QBMAN_CENA_TRACE
 	hexdump(shadow, 64);
 #endif
@@ -335,6 +334,11 @@ static inline int qbman_swp_sys_init(struct qbman_swp_sys *s,
 				     uint8_t dqrr_size)
 {
 	uint32_t reg;
+#ifdef RTE_ARCH_64
+	uint8_t wn = CENA_WRITE_ENABLE;
+#else
+	uint8_t wn = CINH_WRITE_ENABLE;
+#endif
 
 	s->addr_cena = d->cena_bar;
 	s->addr_cinh = d->cinh_bar;
@@ -355,10 +359,10 @@ static inline int qbman_swp_sys_init(struct qbman_swp_sys *s,
 	QBMAN_BUG_ON(reg);
 #endif
 	if (s->eqcr_mode == qman_eqcr_vb_array)
-		reg = qbman_set_swp_cfg(dqrr_size, 0, 0, 3, 2, 3, 1, 1, 1, 1,
+		reg = qbman_set_swp_cfg(dqrr_size, wn, 0, 3, 2, 3, 1, 1, 1, 1,
 					1, 1);
 	else
-		reg = qbman_set_swp_cfg(dqrr_size, 0, 2, 3, 2, 2, 1, 1, 1, 1,
+		reg = qbman_set_swp_cfg(dqrr_size, wn, 1, 3, 2, 2, 1, 1, 1, 1,
 					1, 1);
 	qbman_cinh_write(s, QBMAN_CINH_SWP_CFG, reg);
 	reg = qbman_cinh_read(s, QBMAN_CINH_SWP_CFG);

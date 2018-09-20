@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2018 Intel Corporation
  */
 
 #include <stdio.h>
@@ -50,7 +21,6 @@
 #include <rte_malloc.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
@@ -60,7 +30,6 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -75,14 +44,15 @@
 #include <rte_power.h>
 #include <rte_spinlock.h>
 
+#include "perf_core.h"
+#include "main.h"
+
 #define RTE_LOGTYPE_L3FWD_POWER RTE_LOGTYPE_USER1
 
 #define MAX_PKT_BURST 32
 
 #define MIN_ZERO_POLL_COUNT 10
 
-/* around 100ms at 2 Ghz */
-#define TIMER_RESOLUTION_CYCLES           200000000ULL
 /* 100 ms interval */
 #define TIMER_NUMBER_PER_SECOND           10
 /* 100000 us */
@@ -145,8 +115,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 512
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_TX_DESC_DEFAULT 1024
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
@@ -188,14 +158,7 @@ struct lcore_rx_queue {
 #define MAX_RX_QUEUE_INTERRUPT_PER_PORT 16
 
 
-#define MAX_LCORE_PARAMS 1024
-struct lcore_params {
-	uint16_t port_id;
-	uint8_t queue_id;
-	uint8_t lcore_id;
-} __rte_cache_aligned;
-
-static struct lcore_params lcore_params_array[MAX_LCORE_PARAMS];
+struct lcore_params lcore_params_array[MAX_LCORE_PARAMS];
 static struct lcore_params lcore_params_array_default[] = {
 	{0, 0, 2},
 	{0, 1, 2},
@@ -208,8 +171,8 @@ static struct lcore_params lcore_params_array_default[] = {
 	{3, 1, 3},
 };
 
-static struct lcore_params * lcore_params = lcore_params_array_default;
-static uint16_t nb_lcore_params = sizeof(lcore_params_array_default) /
+struct lcore_params *lcore_params = lcore_params_array_default;
+uint16_t nb_lcore_params = sizeof(lcore_params_array_default) /
 				sizeof(lcore_params_array_default[0]);
 
 static struct rte_eth_conf port_conf = {
@@ -217,11 +180,7 @@ static struct rte_eth_conf port_conf = {
 		.mq_mode        = ETH_MQ_RX_RSS,
 		.max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -233,7 +192,6 @@ static struct rte_eth_conf port_conf = {
 		.mq_mode = ETH_MQ_TX_NONE,
 	},
 	.intr_conf = {
-		.lsc = 1,
 		.rxq = 1,
 	},
 };
@@ -377,7 +335,7 @@ static void
 signal_exit_now(int sigtype)
 {
 	unsigned lcore_id;
-	unsigned int portid, nb_ports;
+	unsigned int portid;
 	int ret;
 
 	if (sigtype == SIGINT) {
@@ -393,8 +351,7 @@ signal_exit_now(int sigtype)
 							"core%u\n", lcore_id);
 		}
 
-		nb_ports = rte_eth_dev_count();
-		for (portid = 0; portid < nb_ports; portid++) {
+		RTE_ETH_FOREACH_DEV(portid) {
 			if ((enabled_port_mask & (1 << portid)) == 0)
 				continue;
 
@@ -759,6 +716,7 @@ power_freq_scaleup_heuristic(unsigned lcore_id,
 			     uint16_t port_id,
 			     uint16_t queue_id)
 {
+	uint32_t rxq_count = rte_eth_rx_queue_count(port_id, queue_id);
 /**
  * HW Rx queue size is 128 by default, Rx burst read at maximum 32 entries
  * per iteration
@@ -770,15 +728,12 @@ power_freq_scaleup_heuristic(unsigned lcore_id,
 #define FREQ_UP_TREND2_ACC   100
 #define FREQ_UP_THRESHOLD    10000
 
-	if (likely(rte_eth_rx_descriptor_done(port_id, queue_id,
-			FREQ_GEAR3_RX_PACKET_THRESHOLD) > 0)) {
+	if (likely(rxq_count > FREQ_GEAR3_RX_PACKET_THRESHOLD)) {
 		stats[lcore_id].trend = 0;
 		return FREQ_HIGHEST;
-	} else if (likely(rte_eth_rx_descriptor_done(port_id, queue_id,
-			FREQ_GEAR2_RX_PACKET_THRESHOLD) > 0))
+	} else if (likely(rxq_count > FREQ_GEAR2_RX_PACKET_THRESHOLD))
 		stats[lcore_id].trend += FREQ_UP_TREND2_ACC;
-	else if (likely(rte_eth_rx_descriptor_done(port_id, queue_id,
-			FREQ_GEAR1_RX_PACKET_THRESHOLD) > 0))
+	else if (likely(rxq_count > FREQ_GEAR1_RX_PACKET_THRESHOLD))
 		stats[lcore_id].trend += FREQ_UP_TREND1_ACC;
 
 	if (likely(stats[lcore_id].trend > FREQ_UP_THRESHOLD)) {
@@ -877,7 +832,7 @@ main_loop(__attribute__((unused)) void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
-	uint64_t prev_tsc, diff_tsc, cur_tsc;
+	uint64_t prev_tsc, diff_tsc, cur_tsc, tim_res_tsc, hz;
 	uint64_t prev_tsc_power = 0, cur_tsc_power, diff_tsc_power;
 	int i, j, nb_rx;
 	uint8_t queueid;
@@ -892,6 +847,8 @@ main_loop(__attribute__((unused)) void *dummy)
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
 
 	prev_tsc = 0;
+	hz = rte_get_timer_hz();
+	tim_res_tsc = hz/TIMER_NUMBER_PER_SECOND;
 
 	lcore_id = rte_lcore_id();
 	qconf = &lcore_conf[lcore_id];
@@ -937,7 +894,7 @@ main_loop(__attribute__((unused)) void *dummy)
 		}
 
 		diff_tsc_power = cur_tsc_power - prev_tsc_power;
-		if (diff_tsc_power > TIMER_RESOLUTION_CYCLES) {
+		if (diff_tsc_power > tim_res_tsc) {
 			rte_timer_manage();
 			prev_tsc_power = cur_tsc_power;
 		}
@@ -1053,9 +1010,11 @@ start_rx:
 					turn_on_intr(qconf);
 					sleep_until_rx_interrupt(
 						qconf->n_rx_queue);
+					/**
+					 * start receiving packets immediately
+					 */
+					goto start_rx;
 				}
-				/* start receiving packets immediately */
-				goto start_rx;
 			}
 			stats[lcore_id].sleep_time += lcore_idle_hint;
 		}
@@ -1091,7 +1050,7 @@ check_lcore_params(void)
 }
 
 static int
-check_port_config(const unsigned nb_ports)
+check_port_config(void)
 {
 	unsigned portid;
 	uint16_t i;
@@ -1103,7 +1062,7 @@ check_port_config(const unsigned nb_ports)
 								portid);
 			return -1;
 		}
-		if (portid >= nb_ports) {
+		if (!rte_eth_dev_is_valid_port(portid)) {
 			printf("port %u is not present on the board\n",
 								portid);
 			return -1;
@@ -1156,10 +1115,15 @@ print_usage(const char *prgname)
 {
 	printf ("%s [EAL options] -- -p PORTMASK -P"
 		"  [--config (port,queue,lcore)[,(port,queue,lcore]]"
+		"  [--high-perf-cores CORELIST"
+		"  [--perf-config (port,queue,hi_perf,lcore_index)[,(port,queue,hi_perf,lcore_index]]"
 		"  [--enable-jumbo [--max-pkt-len PKTLEN]]\n"
 		"  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
 		"  -P : enable promiscuous mode\n"
 		"  --config (port,queue,lcore): rx queues configuration\n"
+		"  --high-perf-cores CORELIST: list of high performance cores\n"
+		"  --perf-config: similar as config, cores specified as indices"
+		" for bins containing high or regular performance cores\n"
 		"  --no-numa: optional, disable numa awareness\n"
 		"  --enable-jumbo: enable jumbo frame"
 		" which max packet len is PKTLEN in decimal (64-9600)\n"
@@ -1269,6 +1233,8 @@ parse_args(int argc, char **argv)
 	char *prgname = argv[0];
 	static struct option lgopts[] = {
 		{"config", 1, 0, 0},
+		{"perf-config", 1, 0, 0},
+		{"high-perf-cores", 1, 0, 0},
 		{"no-numa", 0, 0, 0},
 		{"enable-jumbo", 0, 0, 0},
 		{CMD_LINE_OPT_PARSE_PTYPE, 0, 0, 0},
@@ -1307,6 +1273,26 @@ parse_args(int argc, char **argv)
 			}
 
 			if (!strncmp(lgopts[option_index].name,
+					"perf-config", 11)) {
+				ret = parse_perf_config(optarg);
+				if (ret) {
+					printf("invalid perf-config\n");
+					print_usage(prgname);
+					return -1;
+				}
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					"high-perf-cores", 15)) {
+				ret = parse_perf_core_list(optarg);
+				if (ret) {
+					printf("invalid high-perf-cores\n");
+					print_usage(prgname);
+					return -1;
+				}
+			}
+
+			if (!strncmp(lgopts[option_index].name,
 						"no-numa", 7)) {
 				printf("numa is disabled \n");
 				numa_on = 0;
@@ -1319,7 +1305,10 @@ parse_args(int argc, char **argv)
 									0, 0};
 
 				printf("jumbo frame is enabled \n");
-				port_conf.rxmode.jumbo_frame = 1;
+				port_conf.rxmode.offloads |=
+						DEV_RX_OFFLOAD_JUMBO_FRAME;
+				port_conf.txmode.offloads |=
+						DEV_TX_OFFLOAD_MULTI_SEGS;
 
 				/**
 				 * if no max-pkt-len set, use the default value
@@ -1543,7 +1532,7 @@ init_mem(unsigned nb_mbuf)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
@@ -1555,7 +1544,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 	fflush(stdout);
 	for (count = 0; count <= MAX_CHECK_TIME; count++) {
 		all_ports_up = 1;
-		for (portid = 0; portid < port_num; portid++) {
+		RTE_ETH_FOREACH_DEV(portid) {
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
@@ -1641,6 +1630,23 @@ static int check_ptype(uint16_t portid)
 
 }
 
+static int
+init_power_library(void)
+{
+	int ret = 0, lcore_id;
+	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+		if (rte_lcore_is_enabled(lcore_id)) {
+			/* init power management library */
+			ret = rte_power_init(lcore_id);
+			if (ret)
+				RTE_LOG(ERR, POWER,
+				"Library initialization failed on core %u\n",
+				lcore_id);
+		}
+	}
+	return ret;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1656,7 +1662,6 @@ main(int argc, char **argv)
 	uint32_t dev_rxq_num, dev_txq_num;
 	uint8_t nb_rx_queue, queue, socketid;
 	uint16_t portid;
-	uint16_t org_rxq_intr = port_conf.intr_conf.rxq;
 
 	/* catch SIGINT and restore cpufreq governor to ondemand */
 	signal(SIGINT, signal_exit_now);
@@ -1676,6 +1681,12 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid L3FWD parameters\n");
 
+	if (init_power_library())
+		rte_exit(EXIT_FAILURE, "init_power_library failed\n");
+
+	if (update_lcore_params() < 0)
+		rte_exit(EXIT_FAILURE, "update_lcore_params failed\n");
+
 	if (check_lcore_params() < 0)
 		rte_exit(EXIT_FAILURE, "check_lcore_params failed\n");
 
@@ -1683,15 +1694,17 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "init_lcore_rx_queues failed\n");
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 
-	if (check_port_config(nb_ports) < 0)
+	if (check_port_config() < 0)
 		rte_exit(EXIT_FAILURE, "check_port_config failed\n");
 
 	nb_lcores = rte_lcore_count();
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
+		struct rte_eth_conf local_port_conf = port_conf;
+
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			printf("\nSkipping disabled port %d\n", portid);
@@ -1719,11 +1732,25 @@ main(int argc, char **argv)
 			nb_rx_queue, (unsigned)n_tx_queue );
 		/* If number of Rx queue is 0, no need to enable Rx interrupt */
 		if (nb_rx_queue == 0)
-			port_conf.intr_conf.rxq = 0;
+			local_port_conf.intr_conf.rxq = 0;
+		rte_eth_dev_info_get(portid, &dev_info);
+		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+			local_port_conf.txmode.offloads |=
+				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
+			dev_info.flow_type_rss_offloads;
+		if (local_port_conf.rx_adv_conf.rss_conf.rss_hf !=
+				port_conf.rx_adv_conf.rss_conf.rss_hf) {
+			printf("Port %u modified RSS hash function based on hardware support,"
+				"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+				portid,
+				port_conf.rx_adv_conf.rss_conf.rss_hf,
+				local_port_conf.rx_adv_conf.rss_conf.rss_hf);
+		}
+
 		ret = rte_eth_dev_configure(portid, nb_rx_queue,
-					(uint16_t)n_tx_queue, &port_conf);
-		/* Revert to original value */
-		port_conf.intr_conf.rxq = org_rxq_intr;
+					(uint16_t)n_tx_queue, &local_port_conf);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: "
 					"err=%d, port=%d\n", ret, portid);
@@ -1778,10 +1805,8 @@ main(int argc, char **argv)
 			printf("txq=%u,%d,%d ", lcore_id, queueid, socketid);
 			fflush(stdout);
 
-			rte_eth_dev_info_get(portid, &dev_info);
 			txconf = &dev_info.default_txconf;
-			if (port_conf.rxmode.jumbo_frame)
-				txconf->txq_flags = 0;
+			txconf->offloads = local_port_conf.txmode.offloads;
 			ret = rte_eth_tx_queue_setup(portid, queueid, nb_txd,
 						     socketid, txconf);
 			if (ret < 0)
@@ -1803,12 +1828,6 @@ main(int argc, char **argv)
 		if (rte_lcore_is_enabled(lcore_id) == 0)
 			continue;
 
-		/* init power management library */
-		ret = rte_power_init(lcore_id);
-		if (ret)
-			RTE_LOG(ERR, POWER,
-				"Library initialization failed on core %u\n", lcore_id);
-
 		/* init timer structures for each enabled lcore */
 		rte_timer_init(&power_timers[lcore_id]);
 		hz = rte_get_timer_hz();
@@ -1821,8 +1840,14 @@ main(int argc, char **argv)
 		fflush(stdout);
 		/* init RX queues */
 		for(queue = 0; queue < qconf->n_rx_queue; ++queue) {
+			struct rte_eth_rxconf rxq_conf;
+			struct rte_eth_dev *dev;
+			struct rte_eth_conf *conf;
+
 			portid = qconf->rx_queue_list[queue].port_id;
 			queueid = qconf->rx_queue_list[queue].queue_id;
+			dev = &rte_eth_devices[portid];
+			conf = &dev->data->dev_conf;
 
 			if (numa_on)
 				socketid = \
@@ -1833,8 +1858,11 @@ main(int argc, char **argv)
 			printf("rxq=%d,%d,%d ", portid, queueid, socketid);
 			fflush(stdout);
 
+			rte_eth_dev_info_get(portid, &dev_info);
+			rxq_conf = dev_info.default_rxconf;
+			rxq_conf.offloads = conf->rxmode.offloads;
 			ret = rte_eth_rx_queue_setup(portid, queueid, nb_rxd,
-				socketid, NULL,
+				socketid, &rxq_conf,
 				pktmbuf_pool[socketid]);
 			if (ret < 0)
 				rte_exit(EXIT_FAILURE,
@@ -1854,7 +1882,7 @@ main(int argc, char **argv)
 	printf("\n");
 
 	/* start ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			continue;
 		}
@@ -1875,7 +1903,7 @@ main(int argc, char **argv)
 		rte_spinlock_init(&(locks[portid]));
 	}
 
-	check_all_ports_link_status(nb_ports, enabled_port_mask);
+	check_all_ports_link_status(enabled_port_mask);
 
 	/* launch per-lcore init on every lcore */
 	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);

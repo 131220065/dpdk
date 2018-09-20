@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Intel Corporation
  */
 
 /* rte_cuckoo_hash.h
@@ -57,14 +28,8 @@
 #define RETURN_IF_TRUE(cond, retval)
 #endif
 
-/* Hash function used if none is specified */
-#if defined(RTE_ARCH_X86) || defined(RTE_MACHINE_CPUFLAG_CRC32)
 #include <rte_hash_crc.h>
-#define DEFAULT_HASH_FUNC       rte_hash_crc
-#else
 #include <rte_jhash.h>
-#define DEFAULT_HASH_FUNC       rte_jhash
-#endif
 
 #if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM64)
 /*
@@ -123,14 +88,13 @@ const rte_hash_cmp_eq_t cmp_jump_table[NUM_KEY_CMP_CASES] = {
 
 #endif
 
-enum add_key_case {
-	ADD_KEY_SINGLEWRITER = 0,
-	ADD_KEY_MULTIWRITER,
-	ADD_KEY_MULTIWRITER_TM,
-};
 
 /** Number of items per bucket. */
 #define RTE_HASH_BUCKET_ENTRIES		8
+
+#if !RTE_IS_POWER_OF_2(RTE_HASH_BUCKET_ENTRIES)
+#error RTE_HASH_BUCKET_ENTRIES must be a power of 2
+#endif
 
 #define NULL_SIGNATURE			0
 
@@ -190,18 +154,20 @@ struct rte_hash {
 
 	struct rte_ring *free_slots;
 	/**< Ring that stores all indexes of the free slots in the key table */
-	uint8_t hw_trans_mem_support;
-	/**< Hardware transactional memory support */
+
 	struct lcore_cache *local_free_slots;
 	/**< Local cache per lcore, storing some indexes of the free slots */
-	enum add_key_case add_key; /**< Multi-writer hash add behavior */
-
-	rte_spinlock_t *multiwriter_lock; /**< Multi-writer spinlock for w/o TM */
 
 	/* Fields used in lookup */
 
 	uint32_t key_len __rte_cache_aligned;
 	/**< Length of hash key. */
+	uint8_t hw_trans_mem_support;
+	/**< If hardware transactional memory is used. */
+	uint8_t multi_writer_support;
+	/**< If multi-writer support is enabled. */
+	uint8_t readwrite_concur_support;
+	/**< If read-write concurrency support is enabled */
 	rte_hash_function hash_func;    /**< Function used to calculate hash. */
 	uint32_t hash_func_init_val;    /**< Init value used by hash_func. */
 	rte_hash_cmp_eq_t rte_hash_custom_cmp_eq;
@@ -219,6 +185,7 @@ struct rte_hash {
 	/**< Table with buckets storing all the	hash values and key indexes
 	 * to the key table.
 	 */
+	rte_rwlock_t *readwrite_lock; /**< Read-write lock thread-safety. */
 } __rte_cache_aligned;
 
 struct queue_node {

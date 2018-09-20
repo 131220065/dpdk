@@ -1,41 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 #include <rte_common.h>
-#include <rte_config.h>
 #include <rte_hexdump.h>
 #include <rte_cryptodev.h>
 #include <rte_cryptodev_pmd.h>
-#include <rte_vdev.h>
+#include <rte_bus_vdev.h>
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
 #include <rte_byteorder.h>
@@ -60,8 +31,8 @@ aesni_gcm_set_session_parameters(const struct aesni_gcm_ops *gcm_ops,
 	if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH) {
 		auth_xform = xform;
 		if (auth_xform->auth.algo != RTE_CRYPTO_AUTH_AES_GMAC) {
-			GCM_LOG_ERR("Only AES GMAC is supported as an "
-					"authentication only algorithm");
+			AESNI_GCM_LOG(ERR, "Only AES GMAC is supported as an "
+				"authentication only algorithm");
 			return -ENOTSUP;
 		}
 		/* Set IV parameters */
@@ -83,7 +54,7 @@ aesni_gcm_set_session_parameters(const struct aesni_gcm_ops *gcm_ops,
 		aead_xform = xform;
 
 		if (aead_xform->aead.algo != RTE_CRYPTO_AEAD_AES_GCM) {
-			GCM_LOG_ERR("The only combined operation "
+			AESNI_GCM_LOG(ERR, "The only combined operation "
 						"supported is AES GCM");
 			return -ENOTSUP;
 		}
@@ -104,7 +75,7 @@ aesni_gcm_set_session_parameters(const struct aesni_gcm_ops *gcm_ops,
 		sess->aad_length = aead_xform->aead.aad_length;
 		digest_length = aead_xform->aead.digest_length;
 	} else {
-		GCM_LOG_ERR("Wrong xform type, has to be AEAD or authentication");
+		AESNI_GCM_LOG(ERR, "Wrong xform type, has to be AEAD or authentication");
 		return -ENOTSUP;
 	}
 
@@ -112,7 +83,7 @@ aesni_gcm_set_session_parameters(const struct aesni_gcm_ops *gcm_ops,
 	/* IV check */
 	if (sess->iv.length != 16 && sess->iv.length != 12 &&
 			sess->iv.length != 0) {
-		GCM_LOG_ERR("Wrong IV length");
+		AESNI_GCM_LOG(ERR, "Wrong IV length");
 		return -EINVAL;
 	}
 
@@ -128,7 +99,7 @@ aesni_gcm_set_session_parameters(const struct aesni_gcm_ops *gcm_ops,
 		sess->key = AESNI_GCM_KEY_256;
 		break;
 	default:
-		GCM_LOG_ERR("Invalid key length");
+		AESNI_GCM_LOG(ERR, "Invalid key length");
 		return -EINVAL;
 	}
 
@@ -138,7 +109,7 @@ aesni_gcm_set_session_parameters(const struct aesni_gcm_ops *gcm_ops,
 	if (digest_length != 16 &&
 			digest_length != 12 &&
 			digest_length != 8) {
-		GCM_LOG_ERR("digest");
+		AESNI_GCM_LOG(ERR, "Invalid digest length");
 		return -EINVAL;
 	}
 	sess->digest_length = digest_length;
@@ -156,7 +127,7 @@ aesni_gcm_get_session(struct aesni_gcm_qp *qp, struct rte_crypto_op *op)
 	if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
 		if (likely(sym_op->session != NULL))
 			sess = (struct aesni_gcm_session *)
-					get_session_private_data(
+					get_sym_session_private_data(
 					sym_op->session,
 					cryptodev_driver_id);
 	} else  {
@@ -178,8 +149,8 @@ aesni_gcm_get_session(struct aesni_gcm_qp *qp, struct rte_crypto_op *op)
 			sess = NULL;
 		}
 		sym_op->session = (struct rte_cryptodev_sym_session *)_sess;
-		set_session_private_data(sym_op->session, cryptodev_driver_id,
-			_sess_private_data);
+		set_sym_session_private_data(sym_op->session,
+				cryptodev_driver_id, _sess_private_data);
 	}
 
 	if (unlikely(sess == NULL))
@@ -381,7 +352,7 @@ post_process_gcm_crypto_op(struct aesni_gcm_qp *qp,
 			session->op == AESNI_GMAC_OP_VERIFY) {
 		uint8_t *digest;
 
-		uint8_t *tag = (uint8_t *)&qp->temp_digest;
+		uint8_t *tag = qp->temp_digest;
 
 		if (session->op == AESNI_GMAC_OP_VERIFY)
 			digest = op->sym->auth.digest.data;
@@ -421,7 +392,7 @@ handle_completed_gcm_crypto_op(struct aesni_gcm_qp *qp,
 	if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS) {
 		memset(sess, 0, sizeof(struct aesni_gcm_session));
 		memset(op->sym->session, 0,
-				rte_cryptodev_get_header_session_size());
+				rte_cryptodev_sym_get_header_session_size());
 		rte_mempool_put(qp->sess_mp, sess);
 		rte_mempool_put(qp->sess_mp, op->sym->session);
 		op->sym->session = NULL;
@@ -493,13 +464,13 @@ aesni_gcm_create(const char *name,
 
 	/* Check CPU for support for AES instruction set */
 	if (!rte_cpu_get_flag_enabled(RTE_CPUFLAG_AES)) {
-		GCM_LOG_ERR("AES instructions not supported by CPU");
+		AESNI_GCM_LOG(ERR, "AES instructions not supported by CPU");
 		return -EFAULT;
 	}
-
 	dev = rte_cryptodev_pmd_create(name, &vdev->device, init_params);
 	if (dev == NULL) {
-		GCM_LOG_ERR("driver %s: create failed", init_params->name);
+		AESNI_GCM_LOG(ERR, "driver %s: create failed",
+			init_params->name);
 		return -ENODEV;
 	}
 
@@ -521,7 +492,8 @@ aesni_gcm_create(const char *name,
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
 			RTE_CRYPTODEV_FF_CPU_AESNI |
-			RTE_CRYPTODEV_FF_MBUF_SCATTER_GATHER;
+			RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT |
+			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT;
 
 	switch (vector_mode) {
 	case RTE_AESNI_GCM_SSE:
@@ -542,7 +514,13 @@ aesni_gcm_create(const char *name,
 	internals->vector_mode = vector_mode;
 
 	internals->max_nb_queue_pairs = init_params->max_nb_queue_pairs;
-	internals->max_nb_sessions = init_params->max_nb_sessions;
+
+#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
+	AESNI_GCM_LOG(INFO, "IPSec Multi-buffer library version used: %s\n",
+			imb_get_version_str());
+#else
+	AESNI_GCM_LOG(INFO, "IPSec Multi-buffer library version used: 0.49.0\n");
+#endif
 
 	return 0;
 }
@@ -554,8 +532,7 @@ aesni_gcm_probe(struct rte_vdev_device *vdev)
 		"",
 		sizeof(struct aesni_gcm_private),
 		rte_socket_id(),
-		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS,
-		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_SESSIONS
+		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS
 	};
 	const char *name;
 	const char *input_args;
@@ -597,7 +574,12 @@ RTE_PMD_REGISTER_VDEV(CRYPTODEV_NAME_AESNI_GCM_PMD, aesni_gcm_pmd_drv);
 RTE_PMD_REGISTER_ALIAS(CRYPTODEV_NAME_AESNI_GCM_PMD, cryptodev_aesni_gcm_pmd);
 RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_AESNI_GCM_PMD,
 	"max_nb_queue_pairs=<int> "
-	"max_nb_sessions=<int> "
 	"socket_id=<int>");
-RTE_PMD_REGISTER_CRYPTO_DRIVER(aesni_gcm_crypto_drv, aesni_gcm_pmd_drv,
+RTE_PMD_REGISTER_CRYPTO_DRIVER(aesni_gcm_crypto_drv, aesni_gcm_pmd_drv.driver,
 		cryptodev_driver_id);
+
+
+RTE_INIT(aesni_gcm_init_log)
+{
+	aesni_gcm_logtype_driver = rte_log_register("pmd.crypto.aesni_gcm");
+}

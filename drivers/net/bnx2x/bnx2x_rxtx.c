@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- *
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bnx2x.h"
@@ -26,7 +23,8 @@ ring_dma_zone_reserve(struct rte_eth_dev *dev, const char *ring_name,
 	if (mz)
 		return mz;
 
-	return rte_memzone_reserve_aligned(z_name, ring_size, socket_id, 0, BNX2X_PAGE_SIZE);
+	return rte_memzone_reserve_aligned(z_name, ring_size, socket_id,
+			RTE_MEMZONE_IOVA_CONTIG, BNX2X_PAGE_SIZE);
 }
 
 static void
@@ -71,8 +69,8 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	struct bnx2x_softc *sc = dev->data->dev_private;
 	struct bnx2x_fastpath *fp = &sc->fp[queue_idx];
 	struct eth_rx_cqe_next_page *nextpg;
-	phys_addr_t *rx_bd;
-	phys_addr_t busaddr;
+	rte_iova_t *rx_bd;
+	rte_iova_t busaddr;
 
 	/* First allocate the rx queue data structure */
 	rxq = rte_zmalloc_socket("ethdev RX queue", sizeof(struct bnx2x_rx_queue),
@@ -108,7 +106,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		bnx2x_rx_queue_release(rxq);
 		return -ENOMEM;
 	}
-	fp->rx_desc_mapping = rxq->rx_ring_phys_addr = (uint64_t)dma->phys_addr;
+	fp->rx_desc_mapping = rxq->rx_ring_phys_addr = (uint64_t)dma->iova;
 	rxq->rx_ring = (uint64_t*)dma->addr;
 	memset((void *)rxq->rx_ring, 0, dma_size);
 
@@ -140,7 +138,8 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			return -ENOMEM;
 		}
 		rxq->sw_ring[idx] = mbuf;
-		rxq->rx_ring[idx] = mbuf->buf_physaddr;
+		rxq->rx_ring[idx] =
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 	}
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
@@ -154,7 +153,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		PMD_RX_LOG(ERR, "RCQ  alloc failed");
 		return -ENOMEM;
 	}
-	fp->rx_comp_mapping = rxq->cq_ring_phys_addr = (uint64_t)dma->phys_addr;
+	fp->rx_comp_mapping = rxq->cq_ring_phys_addr = (uint64_t)dma->iova;
 	rxq->cq_ring = (union eth_rx_cqe*)dma->addr;
 
 	/* Link the CQ chain pages. */
@@ -289,7 +288,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		bnx2x_tx_queue_release(txq);
 		return -ENOMEM;
 	}
-	fp->tx_desc_mapping = txq->tx_ring_phys_addr = (uint64_t)tz->phys_addr;
+	fp->tx_desc_mapping = txq->tx_ring_phys_addr = (uint64_t)tz->iova;
 	txq->tx_ring = (union eth_tx_bd_types *) tz->addr;
 	memset(txq->tx_ring, 0, tsize);
 
@@ -400,7 +399,8 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		rx_mb = rxq->sw_ring[bd_cons];
 		rxq->sw_ring[bd_cons] = new_mb;
-		rxq->rx_ring[bd_prod] = new_mb->buf_physaddr;
+		rxq->rx_ring[bd_prod] =
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(new_mb));
 
 		rx_pref = NEXT_RX_BD(bd_cons) & MAX_RX_BD(rxq);
 		rte_prefetch0(rxq->sw_ring[rx_pref]);
@@ -409,7 +409,7 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			rte_prefetch0(&rxq->sw_ring[rx_pref]);
 		}
 
-		rx_mb->data_off = pad;
+		rx_mb->data_off = pad + RTE_PKTMBUF_HEADROOM;
 		rx_mb->nb_segs = 1;
 		rx_mb->next = NULL;
 		rx_mb->pkt_len = rx_mb->data_len = len;

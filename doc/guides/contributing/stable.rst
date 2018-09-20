@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2018 The DPDK contributors
+
 .. stable_lts_releases:
 
 DPDK Stable Releases and Long Term Support
@@ -42,10 +45,10 @@ LTS Release
 -----------
 
 A stable release can be designated as an LTS release based on community
-agreement and a commitment from a maintainer. An LTS release will have a
-maintenance duration of 2 years.
+agreement and a commitment from a maintainer. The current policy is that each
+year's November release will be maintained as an LTS for 2 years.
 
-The current DPDK LTS release is 16.11.
+The current DPDK LTS releases are 16.11 and 17.11.
 
 It is anticipated that there will be at least 4 releases per year of the LTS
 or approximately 1 every 3 months. However, the cadence can be shorter or
@@ -57,7 +60,25 @@ that a tagged release has been tested.
 What changes should be backported
 ---------------------------------
 
-Backporting should be limited to bug fixes.
+Backporting should be limited to bug fixes. All patches accepted on the master
+branch with a Fixes: tag should be backported to the relevant stable/LTS
+branches, unless the submitter indicates otherwise. If there are exceptions,
+they will be discussed on the mailing lists.
+
+Fixes suitable for backport should have a ``Cc: stable@dpdk.org`` tag in the
+commit message body as follows::
+
+     doc: fix some parameter description
+
+     Update the docs, fixing description of some parameter.
+
+     Fixes: abcdefgh1234 ("doc: add some parameter")
+     Cc: stable@dpdk.org
+
+     Signed-off-by: Alex Smith <alex.smith@example.com>
+
+
+Fixes not suitable for backport should not include the ``Cc: stable@dpdk.org`` tag.
 
 Features should not be backported to stable releases. It may be acceptable, in
 limited cases, to back port features for the LTS release where:

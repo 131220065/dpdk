@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2014-2015 Broadcom Corporation.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Broadcom Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Broadcom
+ * All rights reserved.
  */
 
 #include <inttypes.h>
@@ -67,7 +39,7 @@ void bnxt_init_vnics(struct bnxt *bp)
 {
 	struct bnxt_vnic_info *vnic;
 	uint16_t max_vnics;
-	int i, j;
+	int i;
 
 	max_vnics = bp->max_vnics;
 	STAILQ_INIT(&bp->free_vnic_list);
@@ -77,9 +49,8 @@ void bnxt_init_vnics(struct bnxt *bp)
 		vnic->rss_rule = (uint16_t)HWRM_NA_SIGNATURE;
 		vnic->cos_rule = (uint16_t)HWRM_NA_SIGNATURE;
 		vnic->lb_rule = (uint16_t)HWRM_NA_SIGNATURE;
-
-		for (j = 0; j < MAX_QUEUES_PER_VNIC; j++)
-			vnic->fw_grp_ids[j] = (uint16_t)HWRM_NA_SIGNATURE;
+		vnic->hash_mode =
+			HWRM_VNIC_RSS_CFG_INPUT_HASH_MODE_FLAGS_DEFAULT;
 
 		prandom_bytes(vnic->rss_hash_key, HW_HASH_KEY_SIZE);
 		STAILQ_INIT(&vnic->filter);
@@ -107,7 +78,7 @@ int bnxt_free_vnic(struct bnxt *bp, struct bnxt_vnic_info *vnic,
 		}
 		temp = STAILQ_NEXT(temp, next);
 	}
-	RTE_LOG(ERR, PMD, "VNIC %p is not found in pool[%d]\n", vnic, pool);
+	PMD_DRV_LOG(ERR, "VNIC %p is not found in pool[%d]\n", vnic, pool);
 	return -EINVAL;
 }
 
@@ -118,7 +89,7 @@ struct bnxt_vnic_info *bnxt_alloc_vnic(struct bnxt *bp)
 	/* Find the 1st unused vnic from the free_vnic_list pool*/
 	vnic = STAILQ_FIRST(&bp->free_vnic_list);
 	if (!vnic) {
-		RTE_LOG(ERR, PMD, "No more free VNIC resources\n");
+		PMD_DRV_LOG(ERR, "No more free VNIC resources\n");
 		return NULL;
 	}
 	STAILQ_REMOVE_HEAD(&bp->free_vnic_list, next);
@@ -175,7 +146,7 @@ int bnxt_alloc_vnic_attributes(struct bnxt *bp)
 				BNXT_MAX_MC_ADDRS * ETHER_ADDR_LEN);
 	uint16_t max_vnics;
 	int i;
-	phys_addr_t mz_phys_addr;
+	rte_iova_t mz_phys_addr;
 
 	max_vnics = bp->max_vnics;
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE,
@@ -185,22 +156,22 @@ int bnxt_alloc_vnic_attributes(struct bnxt *bp)
 	mz = rte_memzone_lookup(mz_name);
 	if (!mz) {
 		mz = rte_memzone_reserve(mz_name,
-					 entry_length * max_vnics,
-					 SOCKET_ID_ANY,
-					 RTE_MEMZONE_2MB |
-					 RTE_MEMZONE_SIZE_HINT_ONLY);
+				entry_length * max_vnics, SOCKET_ID_ANY,
+				RTE_MEMZONE_2MB |
+				RTE_MEMZONE_SIZE_HINT_ONLY |
+				RTE_MEMZONE_IOVA_CONTIG);
 		if (!mz)
 			return -ENOMEM;
 	}
-	mz_phys_addr = mz->phys_addr;
+	mz_phys_addr = mz->iova;
 	if ((unsigned long)mz->addr == mz_phys_addr) {
-		RTE_LOG(WARNING, PMD,
+		PMD_DRV_LOG(WARNING,
 			"Memzone physical address same as virtual.\n");
-		RTE_LOG(WARNING, PMD,
-			"Using rte_mem_virt2phy()\n");
-		mz_phys_addr = rte_mem_virt2phy(mz->addr);
+		PMD_DRV_LOG(WARNING,
+			"Using rte_mem_virt2iova()\n");
+		mz_phys_addr = rte_mem_virt2iova(mz->addr);
 		if (mz_phys_addr == 0) {
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 			"unable to map vnic address to physical memory\n");
 			return -ENOMEM;
 		}
@@ -241,7 +212,7 @@ void bnxt_free_vnic_mem(struct bnxt *bp)
 	for (i = 0; i < max_vnics; i++) {
 		vnic = &bp->vnic_info[i];
 		if (vnic->fw_vnic_id != (uint16_t)HWRM_NA_SIGNATURE) {
-			RTE_LOG(ERR, PMD, "VNIC is not freed yet!\n");
+			PMD_DRV_LOG(ERR, "VNIC is not freed yet!\n");
 			/* TODO Call HWRM to free VNIC */
 		}
 	}
@@ -260,7 +231,7 @@ int bnxt_alloc_vnic_mem(struct bnxt *bp)
 	vnic_mem = rte_zmalloc("bnxt_vnic_info",
 			       max_vnics * sizeof(struct bnxt_vnic_info), 0);
 	if (vnic_mem == NULL) {
-		RTE_LOG(ERR, PMD, "Failed to alloc memory for %d VNICs",
+		PMD_DRV_LOG(ERR, "Failed to alloc memory for %d VNICs",
 			max_vnics);
 		return -ENOMEM;
 	}

@@ -1,16 +1,14 @@
-/*-
- * Copyright (c) 2007-2013 QLogic Corporation. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2007-2013 Broadcom Corporation.
  *
  * Eric Davis        <edavis@broadcom.com>
  * David Christensen <davidch@broadcom.com>
  * Gary Zambrano     <zambrano@broadcom.com>
  *
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bnx2x.h"
@@ -1338,7 +1336,7 @@ bnx2x_prep_fw_stats_req(struct bnx2x_softc *sc)
     int i;
     int first_queue_query_index;
     struct stats_query_header *stats_hdr = &sc->fw_stats_req->hdr;
-    phys_addr_t cur_data_offset;
+    rte_iova_t cur_data_offset;
     struct stats_query_entry *cur_query_entry;
 
     stats_hdr->cmd_num = sc->fw_stats_num;

@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- *
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bnx2x.h"
@@ -113,7 +110,7 @@ bnx2x_vf_finalize(struct bnx2x_softc *sc,
 #define BNX2X_VF_CHANNEL_TRIES 100
 
 static int
-bnx2x_do_req4pf(struct bnx2x_softc *sc, phys_addr_t phys_addr)
+bnx2x_do_req4pf(struct bnx2x_softc *sc, rte_iova_t phys_addr)
 {
 	uint8_t *status = &sc->vf2pf_mbox->resp.common_reply.status;
 	uint8_t i;

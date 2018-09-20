@@ -1,34 +1,5 @@
-/*-
- * BSD LICENSE
- *
- * Copyright (c) 2015-2017 Atomic Rules LLC
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- * * Neither the name of copyright holder nor the names of its
- * contributors may be used to endorse or promote products derived
- * from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2015-2018 Atomic Rules LLC
  */
 
 #include <unistd.h>
@@ -61,7 +32,7 @@ struct ark_rx_queue {
 	struct rte_mbuf **reserve_q;
 	/* array of physical addresses of the mbuf data pointer */
 	/* This point is a virtual address */
-	phys_addr_t *paddress_q;
+	rte_iova_t *paddress_q;
 	struct rte_mempool *mb_pool;
 
 	struct ark_udm_t *udm;
@@ -95,18 +66,18 @@ eth_ark_rx_hw_setup(struct rte_eth_dev *dev,
 		    struct ark_rx_queue *queue,
 		    uint16_t rx_queue_id __rte_unused, uint16_t rx_queue_idx)
 {
-	phys_addr_t queue_base;
-	phys_addr_t phys_addr_q_base;
-	phys_addr_t phys_addr_prod_index;
+	rte_iova_t queue_base;
+	rte_iova_t phys_addr_q_base;
+	rte_iova_t phys_addr_prod_index;
 
-	queue_base = rte_malloc_virt2phy(queue);
+	queue_base = rte_malloc_virt2iova(queue);
 	phys_addr_prod_index = queue_base +
 		offsetof(struct ark_rx_queue, prod_index);
 
-	phys_addr_q_base = rte_malloc_virt2phy(queue->paddress_q);
+	phys_addr_q_base = rte_malloc_virt2iova(queue->paddress_q);
 
 	/* Verify HW */
-	if (ark_mpu_verify(queue->mpu, sizeof(phys_addr_t))) {
+	if (ark_mpu_verify(queue->mpu, sizeof(rte_iova_t))) {
 		PMD_DRV_LOG(ERR, "Illegal configuration rx queue\n");
 		return -1;
 	}
@@ -204,7 +175,7 @@ eth_ark_dev_rx_queue_setup(struct rte_eth_dev *dev,
 				   socket_id);
 	queue->paddress_q =
 		rte_zmalloc_socket("Ark_rx_queue paddr",
-				   nb_desc * sizeof(phys_addr_t),
+				   nb_desc * sizeof(rte_iova_t),
 				   64,
 				   socket_id);
 
@@ -356,7 +327,7 @@ eth_ark_rx_jumbo(struct ark_rx_queue *queue,
 
 	uint16_t remaining;
 	uint16_t data_len;
-	uint8_t segments;
+	uint16_t segments;
 
 	/* first buf populated by called */
 	mbuf_prev = mbuf0;
@@ -499,22 +470,22 @@ eth_ark_rx_seed_mbufs(struct ark_rx_queue *queue)
 	case 0:
 		while (count != nb) {
 			queue->paddress_q[seed_m++] =
-				(*mbufs++)->buf_physaddr;
+				(*mbufs++)->buf_iova;
 			count++;
 		/* FALLTHROUGH */
 	case 3:
 		queue->paddress_q[seed_m++] =
-			(*mbufs++)->buf_physaddr;
+			(*mbufs++)->buf_iova;
 		count++;
 		/* FALLTHROUGH */
 	case 2:
 		queue->paddress_q[seed_m++] =
-			(*mbufs++)->buf_physaddr;
+			(*mbufs++)->buf_iova;
 		count++;
 		/* FALLTHROUGH */
 	case 1:
 		queue->paddress_q[seed_m++] =
-			(*mbufs++)->buf_physaddr;
+			(*mbufs++)->buf_iova;
 		count++;
 		/* FALLTHROUGH */
 

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -164,14 +135,14 @@ pci_get_uio_dev(struct rte_pci_device *dev, char *dstbuf,
 	 * or uio:uioX */
 
 	snprintf(dirname, sizeof(dirname),
-			"%s/" PCI_PRI_FMT "/uio", pci_get_sysfs_path(),
+			"%s/" PCI_PRI_FMT "/uio", rte_pci_get_sysfs_path(),
 			loc->domain, loc->bus, loc->devid, loc->function);
 
 	dir = opendir(dirname);
 	if (dir == NULL) {
 		/* retry with the parent directory */
 		snprintf(dirname, sizeof(dirname),
-				"%s/" PCI_PRI_FMT, pci_get_sysfs_path(),
+				"%s/" PCI_PRI_FMT, rte_pci_get_sysfs_path(),
 				loc->domain, loc->bus, loc->devid, loc->function);
 		dir = opendir(dirname);
 
@@ -311,21 +282,18 @@ int
 pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
 		struct mapped_pci_resource *uio_res, int map_idx)
 {
-	int fd;
+	int fd = -1;
 	char devname[PATH_MAX];
 	void *mapaddr;
 	struct rte_pci_addr *loc;
 	struct pci_map *maps;
+	int wc_activate = 0;
+
+	if (dev->driver != NULL)
+		wc_activate = dev->driver->drv_flags & RTE_PCI_DRV_WC_ACTIVATE;
 
 	loc = &dev->addr;
 	maps = uio_res->maps;
-
-	/* update devname for mmap  */
-	snprintf(devname, sizeof(devname),
-			"%s/" PCI_PRI_FMT "/resource%d",
-			pci_get_sysfs_path(),
-			loc->domain, loc->bus, loc->devid,
-			loc->function, res_idx);
 
 	/* allocate memory to keep path */
 	maps[map_idx].path = rte_malloc(NULL, strlen(devname) + 1, 0);
@@ -338,11 +306,37 @@ pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
 	/*
 	 * open resource file, to mmap it
 	 */
-	fd = open(devname, O_RDWR);
-	if (fd < 0) {
-		RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
+	if (wc_activate) {
+		/* update devname for mmap  */
+		snprintf(devname, sizeof(devname),
+			"%s/" PCI_PRI_FMT "/resource%d_wc",
+			rte_pci_get_sysfs_path(),
+			loc->domain, loc->bus, loc->devid,
+			loc->function, res_idx);
+
+		if (access(devname, R_OK|W_OK) != -1) {
+			fd = open(devname, O_RDWR);
+			if (fd < 0)
+				RTE_LOG(INFO, EAL, "%s cannot be mapped. "
+					"Fall-back to non prefetchable mode.\n",
+					devname);
+		}
+	}
+
+	if (!wc_activate || fd < 0) {
+		snprintf(devname, sizeof(devname),
+			"%s/" PCI_PRI_FMT "/resource%d",
+			rte_pci_get_sysfs_path(),
+			loc->domain, loc->bus, loc->devid,
+			loc->function, res_idx);
+
+		/* then try to map resource file */
+		fd = open(devname, O_RDWR);
+		if (fd < 0) {
+			RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
 				devname, strerror(errno));
-		goto error;
+			goto error;
+		}
 	}
 
 	/* try mapping somewhere close to the end of hugepages */
@@ -432,7 +426,7 @@ pci_uio_ioport_map(struct rte_pci_device *dev, int bar,
 
 	/* open and read addresses of the corresponding resource in sysfs */
 	snprintf(filename, sizeof(filename), "%s/" PCI_PRI_FMT "/resource",
-		pci_get_sysfs_path(), dev->addr.domain, dev->addr.bus,
+		rte_pci_get_sysfs_path(), dev->addr.domain, dev->addr.bus,
 		dev->addr.devid, dev->addr.function);
 	f = fopen(filename, "r");
 	if (f == NULL) {
@@ -454,7 +448,7 @@ pci_uio_ioport_map(struct rte_pci_device *dev, int bar,
 		goto error;
 	}
 	snprintf(filename, sizeof(filename), "%s/" PCI_PRI_FMT "/resource%d",
-		pci_get_sysfs_path(), dev->addr.domain, dev->addr.bus,
+		rte_pci_get_sysfs_path(), dev->addr.domain, dev->addr.bus,
 		dev->addr.devid, dev->addr.function, bar);
 
 	/* mmap the pci resource */

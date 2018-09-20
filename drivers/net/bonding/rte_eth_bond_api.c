@@ -1,43 +1,14 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <string.h>
 
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_tcp.h>
-#include <rte_vdev.h>
+#include <rte_bus_vdev.h>
 #include <rte_kvargs.h>
 
 #include "rte_eth_bond.h"
@@ -60,6 +31,25 @@ valid_bonded_port_id(uint16_t port_id)
 {
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -1);
 	return check_for_bonded_ethdev(&rte_eth_devices[port_id]);
+}
+
+int
+check_for_master_bonded_ethdev(const struct rte_eth_dev *eth_dev)
+{
+	int i;
+	struct bond_dev_private *internals;
+
+	if (check_for_bonded_ethdev(eth_dev) != 0)
+		return 0;
+
+	internals = eth_dev->data->dev_private;
+
+	/* Check if any of slave devices is a bonded device */
+	for (i = 0; i < internals->slave_count; i++)
+		if (valid_bonded_port_id(internals->slaves[i].port_id) == 0)
+			return 1;
+
+	return 0;
 }
 
 int
@@ -204,7 +194,8 @@ slave_vlan_filter_set(uint16_t bonded_port_id, uint16_t slave_port_id)
 	uint16_t first;
 
 	bonded_eth_dev = &rte_eth_devices[bonded_port_id];
-	if (bonded_eth_dev->data->dev_conf.rxmode.hw_vlan_filter == 0)
+	if ((bonded_eth_dev->data->dev_conf.rxmode.offloads &
+			DEV_RX_OFFLOAD_VLAN_FILTER) == 0)
 		return 0;
 
 	internals = bonded_eth_dev->data->dev_private;
@@ -221,15 +212,61 @@ slave_vlan_filter_set(uint16_t bonded_port_id, uint16_t slave_port_id)
 		for (i = 0, mask = 1;
 		     i < RTE_BITMAP_SLAB_BIT_SIZE;
 		     i ++, mask <<= 1) {
-			if (unlikely(slab & mask))
+			if (unlikely(slab & mask)) {
+				uint16_t vlan_id = pos + i;
+
 				res = rte_eth_dev_vlan_filter(slave_port_id,
-							      (uint16_t)pos, 1);
+							      vlan_id, 1);
+			}
 		}
 		found = rte_bitmap_scan(internals->vlan_filter_bmp,
 					&pos, &slab);
 	} while (found && first != pos && res == 0);
 
 	return res;
+}
+
+static int
+slave_rte_flow_prepare(uint16_t slave_id, struct bond_dev_private *internals)
+{
+	struct rte_flow *flow;
+	struct rte_flow_error ferror;
+	uint16_t slave_port_id = internals->slaves[slave_id].port_id;
+
+	if (internals->flow_isolated_valid != 0) {
+		rte_eth_dev_stop(slave_port_id);
+		if (rte_flow_isolate(slave_port_id, internals->flow_isolated,
+		    &ferror)) {
+			RTE_BOND_LOG(ERR, "rte_flow_isolate failed for slave"
+				     " %d: %s", slave_id, ferror.message ?
+				     ferror.message : "(no stated reason)");
+			return -1;
+		}
+	}
+	TAILQ_FOREACH(flow, &internals->flow_list, next) {
+		flow->flows[slave_id] = rte_flow_create(slave_port_id,
+							&flow->fd->attr,
+							flow->fd->items,
+							flow->fd->actions,
+							&ferror);
+		if (flow->flows[slave_id] == NULL) {
+			RTE_BOND_LOG(ERR, "Cannot create flow for slave"
+				     " %d: %s", slave_id,
+				     ferror.message ? ferror.message :
+				     "(no stated reason)");
+			/* Destroy successful bond flows from the slave */
+			TAILQ_FOREACH(flow, &internals->flow_list, next) {
+				if (flow->flows[slave_id] != NULL) {
+					rte_flow_destroy(slave_port_id,
+							 flow->flows[slave_id],
+							 &ferror);
+					flow->flows[slave_id] = NULL;
+				}
+			}
+			return -1;
+		}
+	}
+	return 0;
 }
 
 static int
@@ -252,9 +289,6 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 		return -1;
 	}
 
-	/* Add slave details to bonded device */
-	slave_eth_dev->data->dev_flags |= RTE_ETH_DEV_BONDED_SLAVE;
-
 	rte_eth_dev_info_get(slave_port_id, &dev_info);
 	if (dev_info.max_rx_pktlen < internals->max_rx_pktlen) {
 		RTE_BOND_LOG(ERR, "Slave (port %u) max_rx_pktlen too small",
@@ -272,8 +306,13 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 	if (internals->slave_count < 1) {
 		/* if MAC is not user defined then use MAC of first slave add to
 		 * bonded device */
-		if (!internals->user_defined_mac)
-			mac_address_set(bonded_eth_dev, slave_eth_dev->data->mac_addrs);
+		if (!internals->user_defined_mac) {
+			if (mac_address_set(bonded_eth_dev,
+					    slave_eth_dev->data->mac_addrs)) {
+				RTE_BOND_LOG(ERR, "Failed to set MAC address");
+				return -1;
+			}
+		}
 
 		/* Inherit eth dev link properties from first slave */
 		link_properties_set(bonded_eth_dev,
@@ -292,6 +331,8 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 		/* Take the first dev's offload capabilities */
 		internals->rx_offload_capa = dev_info.rx_offload_capa;
 		internals->tx_offload_capa = dev_info.tx_offload_capa;
+		internals->rx_queue_offload_capa = dev_info.rx_queue_offload_capa;
+		internals->tx_queue_offload_capa = dev_info.tx_queue_offload_capa;
 		internals->flow_type_rss_offloads = dev_info.flow_type_rss_offloads;
 
 		/* Inherit first slave's max rx packet size */
@@ -300,15 +341,9 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 	} else {
 		internals->rx_offload_capa &= dev_info.rx_offload_capa;
 		internals->tx_offload_capa &= dev_info.tx_offload_capa;
+		internals->rx_queue_offload_capa &= dev_info.rx_queue_offload_capa;
+		internals->tx_queue_offload_capa &= dev_info.tx_queue_offload_capa;
 		internals->flow_type_rss_offloads &= dev_info.flow_type_rss_offloads;
-
-		if (link_properties_valid(bonded_eth_dev,
-				&slave_eth_dev->data->dev_link) != 0) {
-			RTE_BOND_LOG(ERR, "Invalid link properties for slave %d"
-					" in bonding mode %d", slave_port_id,
-					internals->mode);
-			return -1;
-		}
 
 		/* RETA size is GCD of all slaves RETA sizes, so, if all sizes will be
 		 * the power of 2, the lower one is GCD
@@ -324,19 +359,35 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 	bonded_eth_dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf &=
 			internals->flow_type_rss_offloads;
 
-	internals->slave_count++;
+	if (slave_rte_flow_prepare(internals->slave_count, internals) != 0) {
+		RTE_BOND_LOG(ERR, "Failed to prepare new slave flows: port=%d",
+			     slave_port_id);
+		return -1;
+	}
 
-	/* Update all slave devices MACs*/
-	mac_address_slaves_update(bonded_eth_dev);
+	/* Add additional MAC addresses to the slave */
+	if (slave_add_mac_addresses(bonded_eth_dev, slave_port_id) != 0) {
+		RTE_BOND_LOG(ERR, "Failed to add mac address(es) to slave %hu",
+				slave_port_id);
+		return -1;
+	}
+
+	internals->slave_count++;
 
 	if (bonded_eth_dev->data->dev_started) {
 		if (slave_configure(bonded_eth_dev, slave_eth_dev) != 0) {
-			slave_eth_dev->data->dev_flags &= (~RTE_ETH_DEV_BONDED_SLAVE);
+			internals->slave_count--;
 			RTE_BOND_LOG(ERR, "rte_bond_slaves_configure: port=%d",
 					slave_port_id);
 			return -1;
 		}
 	}
+
+	/* Add slave details to bonded device */
+	slave_eth_dev->data->dev_flags |= RTE_ETH_DEV_BONDED_SLAVE;
+
+	/* Update all slave devices MACs */
+	mac_address_slaves_update(bonded_eth_dev);
 
 	/* Register link status change callback with bonded device pointer as
 	 * argument*/
@@ -353,11 +404,6 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 			    !internals->user_defined_primary_port)
 				bond_ethdev_primary_set(internals,
 							slave_port_id);
-
-			if (find_slave_by_id(internals->active_slaves,
-					     internals->active_slave_count,
-					     slave_port_id) == internals->active_slave_count)
-				activate_slave(bonded_eth_dev, slave_port_id);
 		}
 	}
 
@@ -398,6 +444,8 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 	struct rte_eth_dev *bonded_eth_dev;
 	struct bond_dev_private *internals;
 	struct rte_eth_dev *slave_eth_dev;
+	struct rte_flow_error flow_error;
+	struct rte_flow *flow;
 	int i, slave_idx;
 
 	bonded_eth_dev = &rte_eth_devices[bonded_port_id];
@@ -434,8 +482,23 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 			&rte_eth_devices[bonded_port_id].data->port_id);
 
 	/* Restore original MAC address of slave device */
-	mac_address_set(&rte_eth_devices[slave_port_id],
+	rte_eth_dev_default_mac_addr_set(slave_port_id,
 			&(internals->slaves[slave_idx].persisted_mac_addr));
+
+	/* remove additional MAC addresses from the slave */
+	slave_remove_mac_addresses(bonded_eth_dev, slave_port_id);
+
+	/*
+	 * Remove bond device flows from slave device.
+	 * Note: don't restore flow isolate mode.
+	 */
+	TAILQ_FOREACH(flow, &internals->flow_list, next) {
+		if (flow->flows[slave_idx] != NULL) {
+			rte_flow_destroy(slave_port_id, flow->flows[slave_idx],
+					 &flow_error);
+			flow->flows[slave_idx] = NULL;
+		}
+	}
 
 	slave_eth_dev = &rte_eth_devices[slave_port_id];
 	slave_remove(internals, slave_eth_dev);
@@ -463,6 +526,8 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 	if (internals->slave_count == 0) {
 		internals->rx_offload_capa = 0;
 		internals->tx_offload_capa = 0;
+		internals->rx_queue_offload_capa = 0;
+		internals->tx_queue_offload_capa = 0;
 		internals->flow_type_rss_offloads = ETH_RSS_PROTO_MASK;
 		internals->reta_size = 0;
 		internals->candidate_max_rx_pktlen = 0;
@@ -496,10 +561,18 @@ rte_eth_bond_slave_remove(uint16_t bonded_port_id, uint16_t slave_port_id)
 int
 rte_eth_bond_mode_set(uint16_t bonded_port_id, uint8_t mode)
 {
+	struct rte_eth_dev *bonded_eth_dev;
+
 	if (valid_bonded_port_id(bonded_port_id) != 0)
 		return -1;
 
-	return bond_ethdev_mode_set(&rte_eth_devices[bonded_port_id], mode);
+	bonded_eth_dev = &rte_eth_devices[bonded_port_id];
+
+	if (check_for_master_bonded_ethdev(bonded_eth_dev) != 0 &&
+			mode == BONDING_MODE_8023AD)
+		return -1;
+
+	return bond_ethdev_mode_set(bonded_eth_dev, mode);
 }
 
 int
@@ -640,9 +713,21 @@ rte_eth_bond_mac_address_reset(uint16_t bonded_port_id)
 	internals->user_defined_mac = 0;
 
 	if (internals->slave_count > 0) {
+		int slave_port;
+		/* Get the primary slave location based on the primary port
+		 * number as, while slave_add(), we will keep the primary
+		 * slave based on slave_count,but not based on the primary port.
+		 */
+		for (slave_port = 0; slave_port < internals->slave_count;
+		     slave_port++) {
+			if (internals->slaves[slave_port].port_id ==
+			    internals->primary_port)
+				break;
+		}
+
 		/* Set MAC Address of Bonded Device */
 		if (mac_address_set(bonded_eth_dev,
-				&internals->slaves[internals->primary_port].persisted_mac_addr)
+			&internals->slaves[slave_port].persisted_mac_addr)
 				!= 0) {
 			RTE_BOND_LOG(ERR, "Failed to set MAC address on bonded device");
 			return -1;
@@ -667,15 +752,15 @@ rte_eth_bond_xmit_policy_set(uint16_t bonded_port_id, uint8_t policy)
 	switch (policy) {
 	case BALANCE_XMIT_POLICY_LAYER2:
 		internals->balance_xmit_policy = policy;
-		internals->xmit_hash = xmit_l2_hash;
+		internals->burst_xmit_hash = burst_xmit_l2_hash;
 		break;
 	case BALANCE_XMIT_POLICY_LAYER23:
 		internals->balance_xmit_policy = policy;
-		internals->xmit_hash = xmit_l23_hash;
+		internals->burst_xmit_hash = burst_xmit_l23_hash;
 		break;
 	case BALANCE_XMIT_POLICY_LAYER34:
 		internals->balance_xmit_policy = policy;
-		internals->xmit_hash = xmit_l34_hash;
+		internals->burst_xmit_hash = burst_xmit_l34_hash;
 		break;
 
 	default:

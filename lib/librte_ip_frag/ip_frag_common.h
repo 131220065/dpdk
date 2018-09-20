@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _IP_FRAG_COMMON_H_
@@ -53,6 +24,12 @@
 	(key)[0], (key)[1], (key)[2], (key)[3]
 #define IPv6_KEY_BYTES_FMT \
 	"%08" PRIx64 "%08" PRIx64 "%08" PRIx64 "%08" PRIx64
+
+#ifdef RTE_LIBRTE_IP_FRAG_TBL_STAT
+#define	IP_FRAG_TBL_STAT_UPDATE(s, f, v)	((s)->f += (v))
+#else
+#define	IP_FRAG_TBL_STAT_UPDATE(s, f, v)	do {} while (0)
+#endif /* IP_FRAG_TBL_STAT */
 
 /* internal functions declarations */
 struct rte_mbuf * ip_frag_process(struct ip_frag_pkt *fp,
@@ -176,6 +153,18 @@ ip_frag_reset(struct ip_frag_pkt *fp, uint64_t tms)
 	fp->last_idx = IP_MIN_FRAG_NUM;
 	fp->frags[IP_LAST_FRAG_IDX] = zero_frag;
 	fp->frags[IP_FIRST_FRAG_IDX] = zero_frag;
+}
+
+/* local frag table helper functions */
+static inline void
+ip_frag_tbl_del(struct rte_ip_frag_tbl *tbl, struct rte_ip_frag_death_row *dr,
+	struct ip_frag_pkt *fp)
+{
+	ip_frag_free(fp, dr);
+	ip_frag_key_invalidate(&fp->key);
+	TAILQ_REMOVE(&tbl->lru, fp, lru);
+	tbl->use_entries--;
+	IP_FRAG_TBL_STAT_UPDATE(&tbl->stat, del_num, 1);
 }
 
 #endif /* _IP_FRAG_COMMON_H_ */

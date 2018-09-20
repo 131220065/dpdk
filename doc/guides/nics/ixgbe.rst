@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2016 Intel Corporation.
 
 IXGBE Driver
 ============
@@ -95,15 +68,15 @@ Other features are supported using optional MACRO configuration. They include:
 
 *   HW extend dual VLAN
 
-To guarantee the constraint, configuration flags in dev_conf.rxmode will be checked:
+To guarantee the constraint, capabilities in dev_conf.rxmode.offloads will be checked:
 
-*   hw_vlan_strip
+*   DEV_RX_OFFLOAD_VLAN_STRIP
 
-*   hw_vlan_extend
+*   DEV_RX_OFFLOAD_VLAN_EXTEND
 
-*   hw_ip_checksum
+*   DEV_RX_OFFLOAD_CHECKSUM
 
-*   header_split
+*   DEV_RX_OFFLOAD_HEADER_SPLIT
 
 *   dev_conf
 
@@ -129,20 +102,9 @@ Consequently, by default the tx_rs_thresh value is in the range 32 to 64.
 Feature not Supported by TX Vector PMD
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-TX vPMD only works when txq_flags is set to IXGBE_SIMPLE_FLAGS.
+TX vPMD only works when offloads is set to 0
 
-This means that it does not support TX multi-segment, VLAN offload and TX csum offload.
-The following MACROs are used for these three features:
-
-*   ETH_TXQ_FLAGS_NOMULTSEGS
-
-*   ETH_TXQ_FLAGS_NOVLANOFFL
-
-*   ETH_TXQ_FLAGS_NOXSUMSCTP
-
-*   ETH_TXQ_FLAGS_NOXSUMUDP
-
-*   ETH_TXQ_FLAGS_NOXSUMTCP
+This means that it does not support any TX offload.
 
 Application Programming Interface
 ---------------------------------
@@ -157,13 +119,13 @@ l3fwd
 ~~~~~
 
 When running l3fwd with vPMD, there is one thing to note.
-In the configuration, ensure that port_conf.rxmode.hw_ip_checksum=0.
+In the configuration, ensure that DEV_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads is NOT set.
 Otherwise, by default, RX vPMD is disabled.
 
 load_balancer
 ~~~~~~~~~~~~~
 
-As in the case of l3fwd, set configure port_conf.rxmode.hw_ip_checksum=0 to enable vPMD.
+As in the case of l3fwd, to enable vPMD, do NOT set DEV_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads.
 In addition, for improved performance, use -bsz "(32,32),(64,64),(32,32)" in load_balancer to avoid using the default burst size of 144.
 
 
@@ -227,6 +189,47 @@ So when the user sets different MTUs on PF and VF ports in one physical port,
 the real MTU for all these PF and VF ports is the largest value set.
 This behavior is based on the kernel driver behavior.
 
+VF MAC address setting
+~~~~~~~~~~~~~~~~~~~~~~
+
+On ixgbe, the concept of "pool" can be used for different things depending on
+the mode. In VMDq mode, "pool" means a VMDq pool. In IOV mode, "pool" means a
+VF.
+
+There is no RTE API to add a VF's MAC address from the PF. On ixgbe, the
+``rte_eth_dev_mac_addr_add()`` function can be used to add a VF's MAC address,
+as a workaround.
+
+
+Inline crypto processing support
+--------------------------------
+
+Inline IPsec processing is supported for ``RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO``
+mode for ESP packets only:
+
+- ESP authentication only: AES-128-GMAC (128-bit key)
+- ESP encryption and authentication: AES-128-GCM (128-bit key)
+
+IPsec Security Gateway Sample Application supports inline IPsec processing for
+ixgbe PMD.
+
+For more details see the IPsec Security Gateway Sample Application and Security
+library documentation.
+
+
+Virtual Function Port Representors
+----------------------------------
+The IXGBE PF PMD supports the creation of VF port representors for the control
+and monitoring of IXGBE virtual function devices. Each port representor
+corresponds to a single virtual function of that device. Using the ``devargs``
+option ``representor`` the user can specify which virtual functions to create
+port representors for on initialization of the PF PMD by passing the VF IDs of
+the VFs which are required.::
+
+  -w DBDF,representor=[0,1,4]
+
+Currently hot-plugging of representor ports is not supported so all required
+representors must be specified on the creation of the PF.
 
 Supported Chipsets and NICs
 ---------------------------
